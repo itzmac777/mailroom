@@ -391,6 +391,7 @@ async function createMailuMailbox({ local, password, displayName }: MailuCreateA
   const url = new URL(endpoint, base).toString();
   const response = await fetch(url, {
     method: "POST",
+    signal: AbortSignal.timeout(15_000),
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
