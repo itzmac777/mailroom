@@ -36,8 +36,8 @@ export function DashboardPanel() {
         <p className="eyebrow">Mailbox dashboard</p>
         <h1 className="break-words text-[clamp(34px,4.8vw,62px)] font-extrabold leading-none">{mailbox.email}</h1>
         <div className="flex flex-wrap gap-3">
-          <Link className="button button-primary" href="/webmail">Open webmail</Link>
-          <Link className="button button-secondary" href="/logout">Logout</Link>
+          <a className="button button-primary" href="/webmail">Open webmail</a>
+          <a className="button button-secondary" href="/logout">Logout</a>
         </div>
       </section>
       <section className="grid grid-cols-4 gap-px border border-ink bg-ink max-lg:grid-cols-2 max-md:grid-cols-1">
