@@ -808,6 +808,17 @@ function publicMailbox(mailbox: Mailbox): PublicMailbox {
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  console.log(`[DEBUG] Request: ${req.method} ${url.pathname} | Cookies: ${req.headers.cookie || "none"} | Proto: ${req.headers["x-forwarded-proto"] || "none"}`);
+  
+  // Wrap res.setHeader to intercept and log set-cookie headers
+  const originalSetHeader = res.setHeader.bind(res);
+  res.setHeader = (name, value) => {
+    if (name.toLowerCase() === "set-cookie") {
+      console.log(`[DEBUG] Response Set-Cookie: ${value}`);
+    }
+    return originalSetHeader(name, value);
+  };
+
   try {
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
