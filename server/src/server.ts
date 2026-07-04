@@ -227,16 +227,21 @@ function parseCookies(req: IncomingMessage): Record<string, string> {
   );
 }
 
-function setSessionCookie(res: ServerResponse, sessionId: string): void {
-  const secure = env.NODE_ENV === "production" ? "; Secure" : "";
+function getCookieFlags(req?: IncomingMessage): string {
+  const proto = req?.headers["x-forwarded-proto"];
+  if (proto === "https") return "; Secure; SameSite=Lax";
+  return "; SameSite=Lax";
+}
+
+function setSessionCookie(res: ServerResponse, sessionId: string, req?: IncomingMessage): void {
   res.setHeader(
     "set-cookie",
-    `mail_portal_session=${encodeURIComponent(sessionId)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`
+    `mail_portal_session=${encodeURIComponent(sessionId)}; HttpOnly; Path=/; Max-Age=604800${getCookieFlags(req)}`
   );
 }
 
-function clearSessionCookie(res: ServerResponse): void {
-  res.setHeader("set-cookie", "mail_portal_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+function clearSessionCookie(res: ServerResponse, req?: IncomingMessage): void {
+  res.setHeader("set-cookie", `mail_portal_session=; HttpOnly; Path=/; Max-Age=0${getCookieFlags(req)}`);
 }
 
 function rateLimit(req: IncomingMessage, key: string, limit: number, windowMs: number): boolean {
@@ -728,7 +733,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
     };
     await writeDb(db);
-    setSessionCookie(res, sessionId);
+    setSessionCookie(res, sessionId, req);
     return json(res, 201, { mailbox: publicMailbox(mailbox), redirectTo: "/dashboard" });
   }
 
@@ -750,7 +755,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     };
     await audit(db, email, "login_succeeded", { ip: clientIp(req) });
     await writeDb(db);
-    setSessionCookie(res, sessionId);
+    setSessionCookie(res, sessionId, req);
     return json(res, 200, { redirectTo: "/dashboard" });
   }
 
@@ -846,7 +851,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         delete db.sessions[session.sessionId];
         await writeDb(db);
       }
-      clearSessionCookie(res);
+      clearSessionCookie(res, req);
       return redirect(res, "/");
     }
 
