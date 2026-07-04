@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ImapFlow } from "imapflow";
 
 type JsonObject = Record<string, unknown>;
