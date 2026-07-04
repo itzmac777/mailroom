@@ -700,6 +700,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     try {
       providerResult = await createMailuMailbox({ local, password: body.password, displayName });
     } catch (error) {
+      console.error("[ERROR] Mailu mailbox creation failed:", error);
       await audit(db, email, "mailu_create_failed", { message: error.message });
       await writeDb(db);
       return json(res, 502, { error: error.message });
