@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { ImapFlow } from "imapflow";
 
 type JsonObject = Record<string, unknown>;
 
@@ -41,6 +41,7 @@ type SessionRecord = {
   email: string;
   createdAt: string;
   expiresAt: string;
+  encPassword?: string;
 };
 
 type AuditEntry = {
@@ -79,6 +80,7 @@ type CaptchaPayload = {
 type AuthSession = {
   sessionId: string;
   mailbox: Mailbox;
+  encPassword?: string;
 };
 
 type MailuCreateArgs = {
@@ -211,6 +213,89 @@ function hmac(value: string): string {
 
 function randomToken(bytes = 24): string {
   return crypto.randomBytes(bytes).toString("base64url");
+}
+
+function encrypt(text: string): string {
+  const iv = crypto.randomBytes(16);
+  const key = Buffer.from(APP_SECRET.slice(0, 32).padEnd(32, "0"));
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  let encrypted = cipher.update(text, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return iv.toString("hex") + ":" + encrypted;
+}
+
+function decrypt(text: string): string {
+  const parts = text.split(":");
+  const iv = Buffer.from(parts.shift() || "", "hex");
+  const encryptedText = Buffer.from(parts.join(":"), "hex");
+  const key = Buffer.from(APP_SECRET.slice(0, 32).padEnd(32, "0"));
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+  let decrypted = decipher.update(encryptedText);
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  return decrypted.toString("utf8");
+}
+
+const MOCK_EMAILS = [
+  {
+    uid: "1",
+    subject: "Welcome to your new portal mailbox!",
+    from: "Zenvy Support <support@zenvy.com.bd>",
+    date: new Date(Date.now() - 3600000).toISOString()
+  },
+  {
+    uid: "2",
+    subject: "Domain records configured successfully",
+    from: "Zenvy Registrar <billing@zenvy.com.bd>",
+    date: new Date(Date.now() - 86400000).toISOString()
+  }
+];
+
+async function fetchEmails(email: string, pass: string) {
+  if (MAILU_DRY_RUN) {
+    return MOCK_EMAILS;
+  }
+  
+  const client = new ImapFlow({
+    host: MAIL_HOSTNAME,
+    port: 993,
+    secure: true,
+    auth: {
+      user: email,
+      pass
+    },
+    logger: false,
+    // Add TLS options to ignore self-signed certificates or temporary SNI mismatch during setup
+    tls: {
+      rejectUnauthorized: false
+    }
+  });
+  
+  await client.connect();
+  const lock = await client.getMailboxLock("INBOX");
+  const emails = [];
+  try {
+    const status = await client.status("INBOX", { messages: true });
+    const count = status.messages || 0;
+    if (count > 0) {
+      const range = `${Math.max(1, count - 19)}:${count}`;
+      for await (const msg of client.fetch({ seq: range }, { envelope: true })) {
+        emails.push({
+          uid: msg.uid.toString(),
+          seq: msg.seq,
+          subject: msg.envelope.subject || "(No Subject)",
+          from: msg.envelope.from?.[0] 
+            ? `${msg.envelope.from[0].name || ""} <${msg.envelope.from[0].address || ""}>`.trim() 
+            : "Unknown Sender",
+          date: msg.envelope.date ? msg.envelope.date.toISOString() : new Date().toISOString()
+        });
+      }
+      emails.sort((a, b) => b.seq - a.seq);
+    }
+  } finally {
+    lock.release();
+  }
+  await client.logout();
+  return emails;
 }
 
 function parseCookies(req: IncomingMessage): Record<string, string> {
@@ -374,7 +459,7 @@ async function getSession(req: IncomingMessage, db: Db): Promise<AuthSession | n
   if (!session || new Date(session.expiresAt).getTime() < Date.now()) return null;
   const mailbox = db.mailboxes[session.email];
   if (!mailbox) return null;
-  return { sessionId, mailbox };
+  return { sessionId, mailbox, encPassword: session.encPassword };
 }
 
 async function createMailuMailbox({ local, password, displayName }: MailuCreateArgs): Promise<MailuCreateResult> {
@@ -731,7 +816,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     db.sessions[sessionId] = {
       email,
       createdAt: nowIso(),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      encPassword: encrypt(body.password)
     };
     await writeDb(db);
     setSessionCookie(res, sessionId, req);
@@ -752,7 +838,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     db.sessions[sessionId] = {
       email,
       createdAt: nowIso(),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      encPassword: encrypt(body.password)
     };
     await audit(db, email, "login_succeeded", { ip: clientIp(req) });
     await writeDb(db);
@@ -764,6 +851,22 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const session = await getSession(req, db);
     if (!session) return json(res, 401, { error: "Not signed in." });
     return json(res, 200, { mailbox: publicMailbox(session.mailbox) });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/me/emails") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    if (!session.encPassword) {
+      return json(res, 400, { error: "Please log in again to sync your emails." });
+    }
+    try {
+      const password = decrypt(session.encPassword);
+      const emails = await fetchEmails(session.mailbox.email, password);
+      return json(res, 200, { emails });
+    } catch (error) {
+      console.error("[ERROR] Failed to fetch emails via IMAP:", error);
+      return json(res, 500, { error: error.message });
+    }
   }
 
   if (url.pathname.startsWith("/api/admin")) {
