@@ -406,7 +406,7 @@ async function createMailuMailbox({ local, password, displayName }: MailuCreateA
       localpart: local,
       domain: MAIL_DOMAIN,
       email: `${local}@${MAIL_DOMAIN}`,
-      password,
+      raw_password: password,
       display_name: displayName || local,
       quota_bytes: DEFAULT_QUOTA_MB * 1024 * 1024,
       enabled: true,
