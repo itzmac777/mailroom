@@ -34,3 +34,10 @@ export type AdminSummary = {
   }>;
   audit: Array<Record<string, unknown>>;
 };
+
+export type EmailMessage = {
+  uid: string;
+  subject: string;
+  from: string;
+  date: string;
+};
