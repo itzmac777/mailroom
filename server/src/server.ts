@@ -851,8 +851,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
     return html(res, layout({ title: "Not found", body: '<section class="workspace narrow"><div class="panel"><h1>Not found</h1><p>This route does not exist.</p></div></section>' }), 404);
   } catch (error) {
-    console.error(error);
-    return json(res, 500, { error: "Internal server error." });
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("request_failed", { path: url.pathname, message, error });
+    return json(res, 500, { error: env.NODE_ENV === "production" ? "Internal server error." : message });
   }
 }
 
@@ -861,6 +862,7 @@ http.createServer(handle).listen(PORT, () => {
   console.log(`Invite mail portal running at http://localhost:${PORT}`);
   console.log(`Domain: ${MAIL_DOMAIN}; Mailu dry-run: ${MAILU_DRY_RUN}`);
 });
+
 
 
 
