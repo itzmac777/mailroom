@@ -20,8 +20,6 @@ services:
       SERVER_URL: http://server:4000
     depends_on:
       - server
-    ports:
-      - "3000:3000"
 
   caddy:
     image: caddy:2-alpine
@@ -39,3 +37,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+
