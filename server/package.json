@@ -1,0 +1,16 @@
+{
+  "name": "mail-service-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --experimental-strip-types src/server.ts",
+    "start": "node --experimental-strip-types src/server.ts",
+    "check": "node --experimental-strip-types --check src/server.ts && node --experimental-strip-types --check scripts/create-admin-invite.ts && node --experimental-strip-types --check scripts/dns-preflight.ts",
+    "dns:preflight": "node --experimental-strip-types scripts/dns-preflight.ts",
+    "seed:admin": "node --experimental-strip-types scripts/create-admin-invite.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

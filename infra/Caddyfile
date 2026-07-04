@@ -1,0 +1,10 @@
+{
+  email admin@example.com
+}
+
+portal.example.com {
+  reverse_proxy client:3000
+}
+
+# Keep Mailu on its own hostname. Configure Mailu's generated compose stack to
+# serve mail.example.com, then set server WEBMAIL_URL=https://mail.example.com/webmail/.

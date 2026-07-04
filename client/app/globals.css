@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --color-ink: #111111;
+  --color-paper: #ffffff;
+  --color-panel: #ffffff;
+  --color-line: #dedbd2;
+  --color-muted: #5f5f5a;
+  --color-soft: #f6f4ef;
+  --color-cta: #3148d4;
+  --color-ctaDark: #2133a3;
+  --color-wash: #f3f5ff;
+  --shadow-soft: 0 24px 80px rgba(17, 17, 17, 0.08);
+}
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: #ffffff;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #ffffff;
+  color: #111111;
+  font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+input:focus {
+  outline: 2px solid #3148d4;
+  outline-offset: 2px;
+}
+
+.button {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #111111;
+  padding: 0 22px;
+  font-size: 14px;
+  font-weight: 800;
+  transition: transform 160ms ease, background 160ms ease, color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+.button:hover {
+  transform: translateY(-1px);
+}
+
+.button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.button:disabled:hover {
+  transform: none;
+}
+
+.button-primary {
+  border-color: #3148d4;
+  background: #3148d4;
+  color: #ffffff;
+}
+
+.button-primary:hover {
+  border-color: #2133a3;
+  background: #2133a3;
+}
+
+.button-secondary {
+  background: #ffffff;
+  color: #111111;
+}
+
+.panel {
+  border: 1px solid #dedbd2;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(17, 17, 17, 0.08);
+}
+
+.eyebrow {
+  margin-bottom: 0.85rem;
+  font-size: 0.73rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #3148d4;
+}
+
+.label {
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #111111;
+}
+
+.field {
+  min-height: 50px;
+  width: 100%;
+  border: 1px solid #cfcac0;
+  background: #ffffff;
+  padding: 0 0.85rem;
+  color: #111111;
+}
+
+.field::placeholder {
+  color: #97928a;
+}
+
+.surface {
+  border: 1px solid #dedbd2;
+  background: #ffffff;
+}
+
+.hairline {
+  border-color: #dedbd2;
+}
+
