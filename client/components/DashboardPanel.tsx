@@ -383,7 +383,7 @@ export function DashboardPanel() {
           {renderSidebarContent()}
         </aside>
 
-        <section className={`grid min-h-0 grid-rows-[auto_1fr] border-r border-line max-lg:border-b max-lg:border-r-0 ${mobileView === "preview" ? "max-lg:hidden" : "max-lg:grid"}`}>
+        <section className={`grid min-h-0 min-w-0 grid-rows-[auto_1fr] border-r border-line max-lg:border-b max-lg:border-r-0 ${mobileView === "preview" ? "max-lg:hidden" : "max-lg:grid"}`}>
           <header className="border-b border-line bg-white p-5 max-md:p-3.5">
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-3 max-md:gap-2">
@@ -489,7 +489,7 @@ export function DashboardPanel() {
           </div>
         </section>
 
-        <section className={`grid min-h-0 grid-rows-[auto_1fr] bg-white ${mobileView === "list" ? "max-lg:hidden" : "max-lg:grid"}`}>
+        <section className={`grid min-h-0 min-w-0 grid-rows-[auto_1fr] bg-white ${mobileView === "list" ? "max-lg:hidden" : "max-lg:grid"}`}>
           <header className="flex min-h-[86px] max-md:min-h-[64px] items-center justify-between gap-4 border-b border-line px-7 py-5 max-md:px-4 max-md:py-3">
             <div className="flex items-center gap-3 min-w-0">
               {/* Mobile Back Button */}
@@ -509,7 +509,7 @@ export function DashboardPanel() {
                 <p className="mt-1 truncate text-sm max-md:text-xs font-medium text-muted">{selectedEmail ? senderAddress(selectedEmail.from) : mailbox.email}</p>
               </div>
             </div>
-            <div className="flex items-center gap-3 max-md:gap-2">
+            <div className="flex items-center gap-3">
               <button
                 type="button"
                 onClick={copyMailboxAddress}
@@ -519,14 +519,12 @@ export function DashboardPanel() {
               >
                 <CopyIcon className="h-5 w-5 max-md:h-4 max-md:w-4" />
               </button>
-              <a className="button button-secondary min-h-[44px] max-md:min-h-[32px] px-4 max-md:px-2.5 max-md:text-xs" href="/logout">Logout</a>
-              <a className="button button-primary min-h-[44px] max-md:min-h-[32px] px-4 max-md:px-2.5 max-md:text-xs" href="/webmail">Open webmail</a>
             </div>
           </header>
 
           <div className="min-h-0 overflow-y-auto p-7 max-md:p-4">
             {selectedEmail ? (
-              <article className="mx-auto max-w-[780px]">
+              <article className="mx-auto max-w-[780px] w-full min-w-0">
                 <div className="border-b border-line pb-6 max-md:pb-4">
                   {/* Subject and Date line */}
                   <div className="flex flex-wrap items-baseline gap-3 pb-3 mb-5 max-md:mb-3">
@@ -604,22 +602,25 @@ export function DashboardPanel() {
                       <div className="h-4 bg-soft w-11/12 rounded" />
                     </div>
                   ) : selectedEmailBody?.html ? (
-                    <div className="relative w-full h-[550px] max-md:h-[400px] border border-line/40 rounded-sm overflow-hidden bg-white">
+                    <div className="relative w-full h-[550px] max-md:h-[400px] border border-line/40 rounded-sm overflow-x-auto bg-white">
                       <iframe
                         srcDoc={`
                           <!DOCTYPE html>
                           <html>
                             <head>
+                              <meta name="viewport" content="width=device-width, initial-scale=1.0">
                               <style>
                                 body {
                                   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
                                   font-size: 14px;
                                   line-height: 1.6;
                                   color: #333333;
-                                  margin: 16px;
+                                  margin: 12px;
                                 }
                                 a { color: #3148d4; }
                                 p { margin-top: 0; margin-bottom: 1em; }
+                                img { max-width: 100% !important; height: auto !important; }
+                                table, div, p { max-width: 100% !important; box-sizing: border-box !important; }
                               </style>
                             </head>
                             <body>
