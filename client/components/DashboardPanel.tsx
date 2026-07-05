@@ -115,6 +115,8 @@ export function DashboardPanel() {
   const [showDetails, setShowDetails] = useState(false);
   const [emailBodies, setEmailBodies] = useState<Record<string, EmailBodyDetails>>({});
   const [bodyLoading, setBodyLoading] = useState(false);
+  const [showProfileDropdown, setShowProfileDropdown] = useState(false);
+  const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(false);
 
   const fetchMailboxAndEmails = async () => {
     try {
@@ -209,6 +211,122 @@ export function DashboardPanel() {
     }
   }
 
+  function renderSidebarContent() {
+    if (!mailbox) return null;
+    return (
+      <>
+        <div className="border-b border-line p-5">
+          <div className="relative">
+            <div 
+              onClick={() => setShowProfileDropdown((prev) => !prev)}
+              className="flex items-center gap-3 cursor-pointer group select-none hover:bg-wash/50 p-2 rounded-sm transition-colors duration-150"
+            >
+              <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-line bg-white text-lg font-extrabold text-cta shadow-[0_10px_30px_rgba(49,72,212,0.12)]">
+                {mailboxInitial.toUpperCase()}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <p className="truncate text-sm font-extrabold text-ink group-hover:text-cta transition-colors">Me</p>
+                  <svg 
+                    className={`h-4 w-4 text-muted transition-transform duration-200 ${showProfileDropdown ? "rotate-180" : ""}`}
+                    viewBox="0 0 24 24" 
+                    fill="none" 
+                    stroke="currentColor" 
+                    strokeWidth="2.5"
+                  >
+                    <path d="m6 9 6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+                <p className="truncate text-xs font-medium text-muted">{mailbox.email}</p>
+              </div>
+            </div>
+
+            {/* Profile Dropdown Menu */}
+            {showProfileDropdown && (
+              <div className="absolute left-0 top-full z-30 mt-2 w-full border border-line bg-white p-2 shadow-xl rounded-sm">
+                <button
+                  type="button"
+                  onClick={() => {
+                    copyMailboxAddress();
+                    setShowProfileDropdown(false);
+                  }}
+                  className="flex w-full items-center gap-3 p-3 text-left text-sm font-semibold text-ink hover:bg-wash transition-colors"
+                >
+                  <svg className="h-4 w-4 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                  <span>Copy my email address</span>
+                </button>
+                <a
+                  href="/webmail"
+                  onClick={() => setShowProfileDropdown(false)}
+                  className="flex w-full items-center gap-3 p-3 text-left text-sm font-semibold text-ink hover:bg-wash transition-colors"
+                >
+                  <svg className="h-4 w-4 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                  <span>Settings</span>
+                </a>
+                <a
+                  href="/logout"
+                  onClick={() => setShowProfileDropdown(false)}
+                  className="flex w-full items-center gap-3 p-3 text-left text-sm font-semibold text-red-600 hover:bg-wash transition-colors"
+                >
+                  <svg className="h-4 w-4 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <polyline points="16 17 21 12 16 7" />
+                    <line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
+                  <span>Log out</span>
+                </a>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 border border-line bg-white text-xs">
+            <div className="border-r border-line p-3">
+              <span className="block font-bold text-muted">Status</span>
+              <strong className="mt-1 block capitalize text-ink">{mailbox.status}</strong>
+            </div>
+            <div className="p-3">
+              <span className="block font-bold text-muted">Limit</span>
+              <strong className="mt-1 block text-ink">{mailbox.outboundDailyLimit}/day</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid content-start gap-5 p-5">
+          <a className="button button-primary min-h-[44px] w-full px-4" href="/webmail">Compose in webmail</a>
+          <nav className="grid gap-1" aria-label="Mailbox folders">
+            {activeFolders.map((folder) => (
+              <button
+                key={folder.label}
+                type="button"
+                className={`flex min-h-11 items-center justify-between border px-3 text-left text-sm font-bold transition-colors ${folder.active ? "border-cta bg-wash text-cta" : "border-transparent text-muted hover:border-line hover:bg-white hover:text-ink"}`}
+              >
+                <span className="flex items-center gap-2"><MailIcon className="h-4 w-4" />{folder.label}</span>
+                {typeof folder.count === "number" ? <span className="rounded-full bg-white px-2 py-0.5 text-xs text-cta">{folder.count}</span> : null}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <div className="mt-auto border-t border-line p-5">
+          <div className="mb-3 flex items-center justify-between text-xs font-bold text-muted">
+            <span>Storage</span>
+            <span>{storageUsedMb} MB / {mailbox.quotaMb} MB</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-white">
+            <div className="h-full bg-cta" style={{ width: `${storagePercent}%` }} />
+          </div>
+          <p className="mt-3 text-xs leading-5 text-muted">Portal sync is intentionally light. Full folders and message bodies stay in webmail.</p>
+        </div>
+      </>
+    );
+  }
+
   if (error) {
     return (
       <section className="grid min-h-[calc(100vh-132px)] place-items-start justify-center p-12 max-md:p-5">
@@ -226,64 +344,64 @@ export function DashboardPanel() {
 
   return (
     <main className="bg-[#fbfaf7] px-6 py-7 max-md:px-4 max-md:py-4">
+      {/* Left Sidebar Mobile Drawer */}
+      {isLeftSidebarOpen && (
+        <>
+          {/* Backdrop Overlay */}
+          <div 
+            onClick={() => setIsLeftSidebarOpen(false)}
+            className="fixed inset-0 z-40 bg-ink/30 backdrop-blur-sm transition-opacity duration-200" 
+          />
+          {/* Drawer Menu */}
+          <aside className="fixed inset-y-0 left-0 z-50 w-[280px] border-r border-line bg-[#fbfaf7] shadow-xl flex flex-col animate-in slide-in-from-left duration-200">
+            <div className="flex items-center justify-between border-b border-line p-5 bg-white">
+              <span className="text-lg font-bold tracking-tight text-ink">Mailbox Details</span>
+              <button
+                type="button"
+                onClick={() => setIsLeftSidebarOpen(false)}
+                className="grid h-10 w-10 place-items-center border border-line text-ink hover:text-cta transition-colors"
+                aria-label="Close menu"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto flex flex-col justify-between">
+              {renderSidebarContent()}
+            </div>
+          </aside>
+        </>
+      )}
+
       <section className="mx-auto grid min-h-[calc(100vh-178px)] max-w-[1480px] grid-cols-[260px_minmax(360px,460px)_1fr] overflow-hidden border border-line bg-white shadow-soft max-xl:grid-cols-[220px_minmax(330px,430px)_1fr] max-lg:grid-cols-1">
-        <aside className="grid border-r border-line bg-soft/45 max-lg:border-b max-lg:border-r-0">
-          <div className="border-b border-line p-5">
-            <div className="flex items-center gap-3">
-              <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full border border-line bg-white text-lg font-extrabold text-cta shadow-[0_10px_30px_rgba(49,72,212,0.12)]">
-                {mailboxInitial.toUpperCase()}
-              </span>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-extrabold text-ink">{mailbox.displayName || mailbox.local}</p>
-                <p className="truncate text-xs font-medium text-muted">{mailbox.email}</p>
-              </div>
-            </div>
-            <div className="mt-5 grid grid-cols-2 border border-line bg-white text-xs">
-              <div className="border-r border-line p-3">
-                <span className="block font-bold text-muted">Status</span>
-                <strong className="mt-1 block capitalize text-ink">{mailbox.status}</strong>
-              </div>
-              <div className="p-3">
-                <span className="block font-bold text-muted">Limit</span>
-                <strong className="mt-1 block text-ink">{mailbox.outboundDailyLimit}/day</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid content-start gap-5 p-5">
-            <a className="button button-primary min-h-[44px] w-full px-4" href="/webmail">Compose in webmail</a>
-            <nav className="grid gap-1" aria-label="Mailbox folders">
-              {activeFolders.map((folder) => (
-                <button
-                  key={folder.label}
-                  type="button"
-                  className={`flex min-h-11 items-center justify-between border px-3 text-left text-sm font-bold transition-colors ${folder.active ? "border-cta bg-wash text-cta" : "border-transparent text-muted hover:border-line hover:bg-white hover:text-ink"}`}
-                >
-                  <span className="flex items-center gap-2"><MailIcon className="h-4 w-4" />{folder.label}</span>
-                  {typeof folder.count === "number" ? <span className="rounded-full bg-white px-2 py-0.5 text-xs text-cta">{folder.count}</span> : null}
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          <div className="mt-auto border-t border-line p-5">
-            <div className="mb-3 flex items-center justify-between text-xs font-bold text-muted">
-              <span>Storage</span>
-              <span>{storageUsedMb} MB / {mailbox.quotaMb} MB</span>
-            </div>
-            <div className="h-2 overflow-hidden rounded-full bg-white">
-              <div className="h-full bg-cta" style={{ width: `${storagePercent}%` }} />
-            </div>
-            <p className="mt-3 text-xs leading-5 text-muted">Portal sync is intentionally light. Full folders and message bodies stay in webmail.</p>
-          </div>
+        {/* Desktop Sidebar (hidden on mobile) */}
+        <aside className="grid border-r border-line bg-soft/45 max-lg:hidden">
+          {renderSidebarContent()}
         </aside>
 
         <section className="grid min-h-0 grid-rows-[auto_1fr] border-r border-line max-lg:border-b max-lg:border-r-0">
           <header className="border-b border-line bg-white p-5">
             <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="eyebrow m-0">Mailbox dashboard</p>
-                <h1 className="mt-2 text-2xl font-extrabold tracking-[-0.02em] text-ink">Inbox</h1>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsLeftSidebarOpen(true)}
+                  className="hidden max-lg:grid h-10 w-10 shrink-0 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta transition-colors"
+                  aria-label="Toggle mailbox details"
+                >
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="3" y1="12" x2="21" y2="12" />
+                    <line x1="3" y1="6" x2="21" y2="6" />
+                    <line x1="3" y1="18" x2="21" y2="18" />
+                  </svg>
+                </button>
+                <div>
+                  <p className="eyebrow m-0">Mailbox dashboard</p>
+                  <h1 className="mt-2 text-2xl font-extrabold tracking-[-0.02em] text-ink">Inbox</h1>
+                </div>
               </div>
               <button
                 type="button"
