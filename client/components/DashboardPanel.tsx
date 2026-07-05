@@ -639,22 +639,6 @@ export function DashboardPanel() {
                   )}
                 </div>
 
-                <div className="border-t border-line/50 pt-6 mt-4 max-md:pt-4 max-md:mt-2">
-                  <div className="grid grid-cols-3 border border-line bg-[#fbfaf7] text-sm max-md:grid-cols-1">
-                    <div className="border-r border-line p-4 max-md:p-3 max-md:border-b max-md:border-r-0">
-                      <span className="block font-bold text-muted text-xs">Mailbox</span>
-                      <strong className="mt-1 block break-words text-ink text-xs">{mailbox.email}</strong>
-                    </div>
-                    <div className="border-r border-line p-4 max-md:p-3 max-md:border-b max-md:border-r-0">
-                      <span className="block font-bold text-muted text-xs">Quota</span>
-                      <strong className="mt-1 block text-ink text-xs">{mailbox.quotaMb} MB</strong>
-                    </div>
-                    <div className="p-4 max-md:p-3">
-                      <span className="block font-bold text-muted text-xs">Created</span>
-                      <strong className="mt-1 block text-ink text-xs">{new Date(mailbox.createdAt).toLocaleDateString()}</strong>
-                    </div>
-                  </div>
-                </div>
               </article>
             ) : (
               <div className="grid min-h-[520px] place-items-center text-center">
