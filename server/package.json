@@ -11,7 +11,8 @@
     "seed:admin": "node --experimental-strip-types scripts/create-admin-invite.ts"
   },
   "dependencies": {
-    "imapflow": "^1.0.156"
+    "imapflow": "^1.0.156",
+    "mailparser": "^3.7.1"
   },
   "engines": {
     "node": ">=22"

@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ImapFlow } from "imapflow";
+import { simpleParser } from "mailparser";
 
 type JsonObject = Record<string, unknown>;
 
@@ -297,6 +298,58 @@ async function fetchEmails(email: string, pass: string) {
   }
   await client.logout();
   return emails;
+}
+
+async function fetchEmailBody(email: string, pass: string, uid: string) {
+  if (MAILU_DRY_RUN) {
+    const mock = MOCK_EMAILS.find((m) => m.uid === uid);
+    return {
+      uid,
+      body: `Hi there,
+
+This is a mock message body for testing. We are running in dry-run mode, so the server is simulating a live IMAP connection.
+
+Best regards,
+The Mailroom Team`,
+      html: `<p>Hi there,</p><p><br></p><p>This is a mock message body for testing. We are running in dry-run mode, so the server is simulating a live IMAP connection.</p><p><br></p><p>Best regards,<br>The Mailroom Team</p>`,
+      replyTo: mock?.from || "",
+      to: email
+    };
+  }
+
+  const client = new ImapFlow({
+    host: MAIL_HOSTNAME,
+    port: 993,
+    secure: true,
+    auth: {
+      user: email,
+      pass
+    },
+    logger: false,
+    tls: {
+      rejectUnauthorized: false
+    }
+  });
+
+  await client.connect();
+  const lock = await client.getMailboxLock("INBOX");
+  try {
+    const msg = await client.fetchOne(uid, { source: true }, { uid: true });
+    if (!msg || !msg.source) {
+      throw new Error("Message source not found");
+    }
+    const parsed = await simpleParser(msg.source);
+    return {
+      uid,
+      body: parsed.text || "",
+      html: parsed.html || parsed.textAsHtml || "",
+      replyTo: parsed.replyTo?.text || parsed.from?.text || "",
+      to: parsed.to?.text || email
+    };
+  } finally {
+    lock.release();
+    await client.logout();
+  }
 }
 
 function parseCookies(req: IncomingMessage): Record<string, string> {
@@ -866,6 +919,24 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return json(res, 200, { emails });
     } catch (error) {
       console.error("[ERROR] Failed to fetch emails via IMAP:", error);
+      return json(res, 500, { error: error.message });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/me/email") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    if (!session.encPassword) {
+      return json(res, 400, { error: "Please log in again to sync your emails." });
+    }
+    const uid = url.searchParams.get("uid");
+    if (!uid) return json(res, 400, { error: "Missing uid parameter." });
+    try {
+      const password = decrypt(session.encPassword);
+      const email = await fetchEmailBody(session.mailbox.email, password, uid);
+      return json(res, 200, { email });
+    } catch (error) {
+      console.error("[ERROR] Failed to fetch email body via IMAP:", error);
       return json(res, 500, { error: error.message });
     }
   }
