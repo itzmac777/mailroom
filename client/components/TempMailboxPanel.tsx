@@ -158,8 +158,49 @@ export function TempMailboxPanel() {
               <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-cta">Message preview</p>
               <h2 className="mt-4 text-[clamp(28px,4vw,48px)] font-semibold leading-none tracking-[-0.04em] text-ink">{selectedEmail.subject || "(No subject)"}</h2>
               <p className="mt-4 text-sm font-medium text-muted">{senderName(selectedEmail.from)} &lt;{senderAddress(selectedEmail.from)}&gt; · {formatDate(selectedEmail.date)}</p>
-              <div className="mt-8 border border-line bg-[#fbfaf7] p-6 text-[15px] leading-7 text-muted whitespace-pre-wrap">
-                {selectedBody?.body || "Loading message..."}
+              <div className="mt-8 border-t border-line pt-6">
+                {!selectedBody ? (
+                  <div className="grid gap-3 py-4 animate-pulse">
+                    <div className="h-4 w-full rounded bg-soft" />
+                    <div className="h-4 w-5/6 rounded bg-soft" />
+                    <div className="h-4 w-4/5 rounded bg-soft" />
+                  </div>
+                ) : selectedBody.html ? (
+                  <div className="relative h-[550px] w-full overflow-hidden rounded-sm border border-line/40 bg-white max-md:h-[400px]">
+                    <iframe
+                      srcDoc={`
+                        <!DOCTYPE html>
+                        <html>
+                          <head>
+                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                            <style>
+                              body {
+                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                                font-size: 14px;
+                                line-height: 1.6;
+                                color: #333333;
+                                margin: 12px;
+                              }
+                              a { color: #3148d4; }
+                              p { margin-top: 0; margin-bottom: 1em; }
+                              img { max-width: 100% !important; height: auto !important; }
+                              table, div, p { max-width: 100% !important; box-sizing: border-box !important; }
+                            </style>
+                          </head>
+                          <body>
+                            ${selectedBody.html}
+                          </body>
+                        </html>
+                      `}
+                      className="h-full w-full border-0 bg-white"
+                      title="Email content"
+                    />
+                  </div>
+                ) : (
+                  <div className="whitespace-pre-wrap rounded-sm border border-line/40 bg-[#faf9f6]/40 p-6 font-sans text-[15px] leading-7 text-muted max-md:p-4 max-md:text-sm max-md:leading-6">
+                    {selectedBody.body || "No message body content."}
+                  </div>
+                )}
               </div>
             </article>
           ) : (

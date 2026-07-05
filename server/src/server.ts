@@ -165,6 +165,7 @@ const SMTP_PORT = Number(env.SMTP_PORT || 465);
 const SMTP_SECURE = String(env.SMTP_SECURE ?? "true").toLowerCase() !== "false";
 const CLIENT_ORIGIN = env.CLIENT_ORIGIN || "http://localhost:3000";
 const TEMP_SESSION_COOKIE = "mail_temp_session";
+const TEMP_MAIL_ENABLED = String(env.TEMP_MAIL_ENABLED ?? "false").toLowerCase() === "true";
 const TEMP_QUOTA_MB = Number(env.TEMP_QUOTA_MB || 128);
 const TEMP_OUTBOUND_DAILY_LIMIT = 0;
 const FOLDER_NAMES: Record<MailFolder, string> = {
@@ -1264,6 +1265,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
   }
 
+  if (url.pathname.startsWith("/api/temp-mailboxes") && !TEMP_MAIL_ENABLED) {
+    return json(res, 404, { error: "Temporary mail is not available." });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/temp-mailboxes") {
     if (!rateLimit(req, "temp-create", 12, 15 * 60 * 1000)) return json(res, 429, { error: "Too many temp inboxes. Try again later." });
     const body = await parseBody(req);
@@ -1376,16 +1381,20 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
     if (req.method === "GET" && url.pathname === "/api/admin/summary") {
       const publicMailboxes = Object.values(db.mailboxes).map(publicMailbox);
+      const permanentCount = publicMailboxes.filter((mailbox) => mailbox.kind !== "temporary").length;
+      const visibleMailboxes = TEMP_MAIL_ENABLED ? publicMailboxes : publicMailboxes.filter((mailbox) => mailbox.kind !== "temporary");
+      const mailboxCounts = TEMP_MAIL_ENABLED ? {
+        permanent: permanentCount,
+        temporary: publicMailboxes.filter((mailbox) => mailbox.kind === "temporary" && !mailbox.deletedAt).length,
+        expiredTemporary: publicMailboxes.filter((mailbox) => mailbox.kind === "temporary" && Boolean(mailbox.expiresAt) && new Date(mailbox.expiresAt!).getTime() <= Date.now()).length
+      } : { permanent: permanentCount };
       return json(res, 200, {
-        mailboxes: publicMailboxes,
-        mailboxCounts: {
-          permanent: publicMailboxes.filter((mailbox) => mailbox.kind !== "temporary").length,
-          temporary: publicMailboxes.filter((mailbox) => mailbox.kind === "temporary" && !mailbox.deletedAt).length,
-          expiredTemporary: publicMailboxes.filter((mailbox) => mailbox.kind === "temporary" && Boolean(mailbox.expiresAt) && new Date(mailbox.expiresAt!).getTime() <= Date.now()).length
-        },
+        mailboxes: visibleMailboxes,
+        mailboxCounts,
         invites: Object.values(db.invites).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 50),
         audit: db.audit.slice(0, 50),
-        dryRun: MAILU_DRY_RUN
+        dryRun: MAILU_DRY_RUN,
+        tempMailEnabled: TEMP_MAIL_ENABLED
       });
     }
   }
@@ -1419,7 +1428,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         webmailUrl: WEBMAIL_URL,
         dryRun: MAILU_DRY_RUN,
         defaultQuotaMb: DEFAULT_QUOTA_MB,
-        defaultOutboundDailyLimit: DEFAULT_OUTBOUND_DAILY_LIMIT
+        defaultOutboundDailyLimit: DEFAULT_OUTBOUND_DAILY_LIMIT,
+        tempMailEnabled: TEMP_MAIL_ENABLED
       });
     }
     if (url.pathname.startsWith("/api/")) return handleApi(req, res, url);

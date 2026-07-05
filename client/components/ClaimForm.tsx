@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 
-type Props = { mailDomain: string };
+type Props = { mailDomain: string; tempMailEnabled?: boolean };
 type Captcha = { id: string; question: string; token: string };
 
 type ClaimMode = "temporary" | "permanent";
 
-export function ClaimForm({ mailDomain }: Props) {
-  const [mode, setMode] = useState<ClaimMode>("temporary");
+export function ClaimForm({ mailDomain, tempMailEnabled = false }: Props) {
+  const tempEnabled = Boolean(tempMailEnabled);
+  const [mode, setMode] = useState<ClaimMode>(tempEnabled ? "temporary" : "permanent");
   const [captcha, setCaptcha] = useState<Captcha | null>(null);
   const [local, setLocal] = useState("");
   const [durationHours, setDurationHours] = useState<1 | 24>(1);
@@ -26,6 +27,10 @@ export function ClaimForm({ mailDomain }: Props) {
   useEffect(() => {
     refreshCaptcha().catch((error) => setMessage(error.message));
   }, []);
+
+  useEffect(() => {
+    if (!tempEnabled && mode === "temporary") setMode("permanent");
+  }, [mode, tempEnabled]);
 
   useEffect(() => {
     if (mode !== "permanent") return;
@@ -85,12 +90,13 @@ export function ClaimForm({ mailDomain }: Props) {
     event.preventDefault();
     if (!captcha) return;
     const form = new FormData(event.currentTarget);
+    const useTemporary = tempEnabled && mode === "temporary";
     setBusy(true);
-    setMessage(mode === "temporary" ? "Creating temp inbox..." : "Creating mailbox...");
+    setMessage(useTemporary ? "Creating temp inbox..." : "Creating mailbox...");
     setMessageState("");
     try {
-      const result = mode === "temporary" ? await submitTemporary(form) : await submitPermanent(form);
-      window.location.href = result.redirectTo ?? (mode === "temporary" ? "/temp" : "/dashboard");
+      const result = useTemporary ? await submitTemporary(form) : await submitPermanent(form);
+      window.location.href = result.redirectTo ?? (useTemporary ? "/temp" : "/dashboard");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Mailbox creation failed.");
       setMessageState("bad");
@@ -107,24 +113,26 @@ export function ClaimForm({ mailDomain }: Props) {
         <strong>@{mailDomain}</strong>
       </div>
 
-      <div className="grid grid-cols-2 border border-line bg-soft/50 p-1 text-sm font-extrabold">
-        {(["temporary", "permanent"] as ClaimMode[]).map((item) => (
-          <button
-            key={item}
-            type="button"
-            onClick={() => {
-              setMode(item);
-              setMessage("");
-              setMessageState("");
-            }}
-            className={`min-h-11 px-3 transition-colors ${mode === item ? "bg-white text-cta shadow-[0_10px_30px_rgba(17,17,17,0.06)]" : "text-muted hover:text-ink"}`}
-          >
-            {item === "temporary" ? "Temporary" : "Permanent"}
-          </button>
-        ))}
-      </div>
+      {tempEnabled ? (
+        <div className="grid grid-cols-2 border border-line bg-soft/50 p-1 text-sm font-extrabold">
+          {(["temporary", "permanent"] as ClaimMode[]).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => {
+                setMode(item);
+                setMessage("");
+                setMessageState("");
+              }}
+              className={`min-h-11 px-3 transition-colors ${mode === item ? "bg-white text-cta shadow-[0_10px_30px_rgba(17,17,17,0.06)]" : "text-muted hover:text-ink"}`}
+            >
+              {item === "temporary" ? "Temporary" : "Permanent"}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
-      {mode === "temporary" ? (
+      {tempEnabled && mode === "temporary" ? (
         <div className="grid gap-4">
           <div className="border border-line bg-[#fbfaf7] p-4">
             <h2 className="text-xl font-extrabold tracking-[-0.02em] text-ink">Disposable inbox</h2>
@@ -147,22 +155,22 @@ export function ClaimForm({ mailDomain }: Props) {
         </div>
       ) : (
         <div className="grid gap-4">
-          <label className="label">Invite code<input className="field" name="inviteCode" autoComplete="one-time-code" placeholder="PASTE-CODE" required={mode === "permanent"} /></label>
-          <label className="label">Display name<input className="field" name="displayName" autoComplete="name" placeholder="Alex Morgan" required={mode === "permanent"} /></label>
+          <label className="label">Invite code<input className="field" name="inviteCode" autoComplete="one-time-code" placeholder="PASTE-CODE" required /></label>
+          <label className="label">Display name<input className="field" name="displayName" autoComplete="name" placeholder="Alex Morgan" required /></label>
           <label className="label">Email address
             <div className="grid grid-cols-[minmax(0,1fr)_auto] border border-ink bg-[#fffef9] max-md:grid-cols-1">
-              <input className="min-h-12 min-w-0 border-0 bg-transparent px-3" name="local" autoComplete="username" placeholder="alex" value={local} onChange={(event) => setLocal(event.target.value)} required={mode === "permanent"} />
+              <input className="min-h-12 min-w-0 border-0 bg-transparent px-3" name="local" autoComplete="username" placeholder="alex" value={local} onChange={(event) => setLocal(event.target.value)} required />
               <span className="px-3 py-3 text-muted max-md:pt-0">@{mailDomain}</span>
             </div>
           </label>
           <p className={`min-h-6 text-sm font-bold ${statusClass}`}>{availability}</p>
-          <label className="label">Password<input className="field" name="password" type="password" autoComplete="new-password" placeholder="12+ chars, mixed case, number" required={mode === "permanent"} /></label>
+          <label className="label">Password<input className="field" name="password" type="password" autoComplete="new-password" placeholder="12+ chars, mixed case, number" required /></label>
         </div>
       )}
 
       <label className="label">Captcha <span className="text-muted">{captcha?.question ?? "Loading..."}</span><input className="field" name="captchaAnswer" inputMode="numeric" required /></label>
       <button className="button button-primary w-full" type="submit" disabled={busy || !captcha}>
-        {busy ? "Creating..." : mode === "temporary" ? "Create temp inbox" : "Create permanent mailbox"}
+        {busy ? "Creating..." : tempEnabled && mode === "temporary" ? "Create temp inbox" : "Create permanent mailbox"}
       </button>
       <p className={`min-h-6 text-sm font-bold ${messageState === "bad" ? "text-red-700" : "text-muted"}`}>{message}</p>
     </form>

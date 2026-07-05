@@ -5,6 +5,7 @@ export type PublicConfig = {
   dryRun: boolean;
   defaultQuotaMb: number;
   defaultOutboundDailyLimit: number;
+  tempMailEnabled: boolean;
 };
 
 export type PublicMailbox = {
@@ -27,8 +28,9 @@ export type PublicMailbox = {
 
 export type AdminSummary = {
   dryRun: boolean;
+  tempMailEnabled?: boolean;
   mailboxes: PublicMailbox[];
-  mailboxCounts?: { permanent: number; temporary: number; expiredTemporary: number };
+  mailboxCounts?: { permanent: number; temporary?: number; expiredTemporary?: number };
   invites: Array<{
     code: string;
     note?: string;
@@ -46,5 +48,3 @@ export type EmailMessage = {
   from: string;
   date: string;
 };
-
-

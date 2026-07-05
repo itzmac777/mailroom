@@ -26,7 +26,8 @@ export async function getPublicConfig(): Promise<PublicConfig> {
       webmailUrl: `https://mail.${fallbackDomain}/webmail/`,
       dryRun: true,
       defaultQuotaMb: 1024,
-      defaultOutboundDailyLimit: 50
+      defaultOutboundDailyLimit: 50,
+      tempMailEnabled: false
     };
   }
 }
