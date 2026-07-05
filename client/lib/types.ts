@@ -13,17 +13,22 @@ export type PublicMailbox = {
   domain: string;
   email: string;
   displayName: string;
+  kind: "temporary" | "permanent";
   status: "dry-run" | "active";
   quotaMb: number;
   outboundDailyLimit: number;
   createdAt: string;
-  inviteCode: string;
+  inviteCode?: string;
+  expiresAt?: string;
+  disabledAt?: string;
+  deletedAt?: string;
   webmailUrl: string;
 };
 
 export type AdminSummary = {
   dryRun: boolean;
   mailboxes: PublicMailbox[];
+  mailboxCounts?: { permanent: number; temporary: number; expiredTemporary: number };
   invites: Array<{
     code: string;
     note?: string;
@@ -41,3 +46,5 @@ export type EmailMessage = {
   from: string;
   date: string;
 };
+
+

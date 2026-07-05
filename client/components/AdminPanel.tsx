@@ -62,9 +62,10 @@ export function AdminPanel() {
         </div>
         {summary ? (
           <div>
-            <div className="mb-5 grid grid-cols-3 gap-px border border-ink bg-ink max-md:grid-cols-1">
+            <div className="mb-5 grid grid-cols-4 gap-px border border-ink bg-ink max-md:grid-cols-1">
               <div className="grid gap-1 bg-paper p-4"><span className="text-xs font-bold uppercase text-muted">Dry run</span><strong>{summary.dryRun ? "On" : "Off"}</strong></div>
-              <div className="grid gap-1 bg-paper p-4"><span className="text-xs font-bold uppercase text-muted">Mailboxes</span><strong>{summary.mailboxes.length}</strong></div>
+              <div className="grid gap-1 bg-paper p-4"><span className="text-xs font-bold uppercase text-muted">Permanent</span><strong>{summary.mailboxCounts?.permanent ?? summary.mailboxes.length}</strong></div>
+              <div className="grid gap-1 bg-paper p-4"><span className="text-xs font-bold uppercase text-muted">Temp active</span><strong>{summary.mailboxCounts?.temporary ?? 0}</strong></div>
               <div className="grid gap-1 bg-paper p-4"><span className="text-xs font-bold uppercase text-muted">Invites</span><strong>{summary.invites.length}</strong></div>
             </div>
             <div className="grid border-t border-line">
@@ -80,3 +81,5 @@ export function AdminPanel() {
     </section>
   );
 }
+
+

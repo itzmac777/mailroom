@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import tls from "node:tls";
 import { fileURLToPath } from "node:url";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
@@ -27,12 +28,16 @@ type Mailbox = {
   domain: string;
   email: string;
   displayName: string;
+  kind?: "temporary" | "permanent";
   status: "dry-run" | "active";
   quotaMb: number;
   outboundDailyLimit: number;
   passwordHash: string;
   createdAt: string;
-  inviteCode: string;
+  inviteCode?: string;
+  expiresAt?: string;
+  disabledAt?: string;
+  deletedAt?: string;
   webmailUrl: string;
   providerResult: MailuCreateResult;
 };
@@ -54,10 +59,18 @@ type AuditEntry = {
   details: JsonObject;
 };
 
+type TempSessionRecord = {
+  email: string;
+  createdAt: string;
+  expiresAt: string;
+  encPassword: string;
+};
+
 type Db = {
   invites: Record<string, Invite>;
   mailboxes: Record<string, Mailbox>;
   sessions: Record<string, SessionRecord>;
+  tempSessions: Record<string, TempSessionRecord>;
   audit: AuditEntry[];
 };
 
@@ -89,6 +102,7 @@ type MailuCreateArgs = {
   local: string;
   password: string;
   displayName: string;
+  kind?: "temporary" | "permanent";
 };
 
 type MailuCreateResult = {
@@ -106,6 +120,7 @@ type LayoutOptions = {
 };
 
 type RequestBody = Record<string, any>;
+type MailFolder = "inbox" | "sent" | "spam" | "trash";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 function loadDotEnv(): void {
   const envPath = path.join(__dirname, "..", ".env");
@@ -144,7 +159,20 @@ const ADMIN_TOKEN = env.ADMIN_TOKEN || "change-me";
 const DEFAULT_QUOTA_MB = Number(env.DEFAULT_QUOTA_MB || 1024);
 const DEFAULT_OUTBOUND_DAILY_LIMIT = Number(env.DEFAULT_OUTBOUND_DAILY_LIMIT || 50);
 const MAILU_DRY_RUN = String(env.MAILU_DRY_RUN ?? "true").toLowerCase() !== "false";
+const MAILU_DELETE_USER_ENDPOINT = env.MAILU_DELETE_USER_ENDPOINT || "/api/v1/user";
+const SMTP_HOST = env.SMTP_HOST || MAIL_HOSTNAME;
+const SMTP_PORT = Number(env.SMTP_PORT || 465);
+const SMTP_SECURE = String(env.SMTP_SECURE ?? "true").toLowerCase() !== "false";
 const CLIENT_ORIGIN = env.CLIENT_ORIGIN || "http://localhost:3000";
+const TEMP_SESSION_COOKIE = "mail_temp_session";
+const TEMP_QUOTA_MB = Number(env.TEMP_QUOTA_MB || 128);
+const TEMP_OUTBOUND_DAILY_LIMIT = 0;
+const FOLDER_NAMES: Record<MailFolder, string> = {
+  inbox: "INBOX",
+  sent: "Sent",
+  spam: "Junk",
+  trash: "Trash"
+};
 
 const RESERVED = new Set([
   "abuse",
@@ -252,9 +280,24 @@ const MOCK_EMAILS = [
   }
 ];
 
-async function fetchEmails(email: string, pass: string) {
+const MOCK_SENT_EMAILS = [
+  {
+    uid: "sent-1",
+    subject: "Re: Welcome to your new portal mailbox!",
+    from: `Me <me@${MAIL_DOMAIN}>`,
+    date: new Date(Date.now() - 1800000).toISOString()
+  }
+];
+
+function mockEmailsForFolder(folder: MailFolder) {
+  if (folder === "sent") return MOCK_SENT_EMAILS;
+  if (folder === "spam" || folder === "trash") return [];
+  return MOCK_EMAILS;
+}
+
+async function fetchEmails(email: string, pass: string, folder: MailFolder = "inbox") {
   if (MAILU_DRY_RUN) {
-    return MOCK_EMAILS;
+    return mockEmailsForFolder(folder);
   }
   
   const client = new ImapFlow({
@@ -273,10 +316,10 @@ async function fetchEmails(email: string, pass: string) {
   });
   
   await client.connect();
-  const lock = await client.getMailboxLock("INBOX");
+  const lock = await client.getMailboxLock(FOLDER_NAMES[folder]);
   const emails = [];
   try {
-    const status = await client.status("INBOX", { messages: true });
+    const status = await client.status(FOLDER_NAMES[folder], { messages: true });
     const count = status.messages || 0;
     if (count > 0) {
       const range = `${Math.max(1, count - 19)}:${count}`;
@@ -300,9 +343,9 @@ async function fetchEmails(email: string, pass: string) {
   return emails;
 }
 
-async function fetchEmailBody(email: string, pass: string, uid: string) {
+async function fetchEmailBody(email: string, pass: string, uid: string, folder: MailFolder = "inbox") {
   if (MAILU_DRY_RUN) {
-    const mock = MOCK_EMAILS.find((m) => m.uid === uid);
+    const mock = mockEmailsForFolder(folder).find((m) => m.uid === uid);
     return {
       uid,
       body: `Hi there,
@@ -332,7 +375,7 @@ The Mailroom Team`,
   });
 
   await client.connect();
-  const lock = await client.getMailboxLock("INBOX");
+  const lock = await client.getMailboxLock(FOLDER_NAMES[folder]);
   try {
     const msg = await client.fetchOne(uid, { source: true }, { uid: true });
     if (!msg || !msg.source) {
@@ -349,6 +392,117 @@ The Mailroom Team`,
   } finally {
     lock.release();
     await client.logout();
+  }
+}
+
+async function moveEmail(email: string, pass: string, uid: string, fromFolder: MailFolder, toFolder: MailFolder) {
+  if (MAILU_DRY_RUN) return { moved: true, dryRun: true };
+  const client = new ImapFlow({
+    host: MAIL_HOSTNAME,
+    port: 993,
+    secure: true,
+    auth: { user: email, pass },
+    logger: false,
+    tls: { rejectUnauthorized: false }
+  });
+  await client.connect();
+  const lock = await client.getMailboxLock(FOLDER_NAMES[fromFolder]);
+  try {
+    await client.messageMove(uid, FOLDER_NAMES[toFolder], { uid: true });
+    return { moved: true };
+  } finally {
+    lock.release();
+    await client.logout();
+  }
+}
+
+function cleanHeader(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
+function encodeSubject(value: string): string {
+  const clean = cleanHeader(value || "(No subject)");
+  return /^[\x00-\x7F]*$/.test(clean) ? clean : `=?UTF-8?B?${Buffer.from(clean).toString("base64")}?=`;
+}
+
+function normalizeRecipients(value: unknown): string[] {
+  return String(value || "")
+    .split(/[;,]/)
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+    .filter((item) => /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(item))
+    .slice(0, 10);
+}
+
+async function smtpCommand(socket: tls.TLSSocket, command: string, expected: number[]): Promise<string> {
+  if (command) socket.write(`${command}\r\n`);
+  let buffer = "";
+  return await new Promise((resolve, reject) => {
+    const timeout = windowlessTimeout(() => {
+      cleanup();
+      reject(new Error(`SMTP timed out after ${command || "greeting"}.`));
+    }, 15_000);
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      const lines = buffer.split(/\r?\n/).filter(Boolean);
+      const last = lines.at(-1) || "";
+      if (/^\d{3} /.test(last)) {
+        const code = Number(last.slice(0, 3));
+        cleanup();
+        if (expected.includes(code)) resolve(buffer);
+        else reject(new Error(`SMTP command failed (${code}): ${buffer.slice(0, 300)}`));
+      }
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off("data", onData);
+      socket.off("error", onError);
+    };
+    socket.on("data", onData);
+    socket.on("error", onError);
+  });
+}
+
+function windowlessTimeout(callback: () => void, ms: number) {
+  return setTimeout(callback, ms);
+}
+
+async function sendPlainEmail(from: string, pass: string, recipients: string[], subject: string, body: string) {
+  if (MAILU_DRY_RUN) return { sent: true, dryRun: true };
+  const socket = tls.connect({ host: SMTP_HOST, port: SMTP_PORT, servername: SMTP_HOST, rejectUnauthorized: SMTP_SECURE });
+  try {
+    await smtpCommand(socket, "", [220]);
+    await smtpCommand(socket, `EHLO ${MAIL_DOMAIN}`, [250]);
+    await smtpCommand(socket, "AUTH LOGIN", [334]);
+    await smtpCommand(socket, Buffer.from(from).toString("base64"), [334]);
+    await smtpCommand(socket, Buffer.from(pass).toString("base64"), [235]);
+    await smtpCommand(socket, `MAIL FROM:<${from}>`, [250]);
+    for (const recipient of recipients) {
+      await smtpCommand(socket, `RCPT TO:<${recipient}>`, [250, 251]);
+    }
+    await smtpCommand(socket, "DATA", [354]);
+    const raw = [
+      `From: ${cleanHeader(from)}`,
+      `To: ${recipients.map(cleanHeader).join(", ")}`,
+      `Subject: ${encodeSubject(subject)}`,
+      `Date: ${new Date().toUTCString()}`,
+      `Message-ID: <${randomToken(12)}@${MAIL_DOMAIN}>`,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      String(body || "").replace(/^\./gm, ".."),
+      "."
+    ].join("\r\n");
+    await smtpCommand(socket, raw, [250]);
+    await smtpCommand(socket, "QUIT", [221]);
+    return { sent: true };
+  } finally {
+    socket.destroy();
   }
 }
 
@@ -383,6 +537,52 @@ function clearSessionCookie(res: ServerResponse, req?: IncomingMessage): void {
   res.setHeader("set-cookie", `mail_portal_session=; HttpOnly; Path=/; Max-Age=0${getCookieFlags(req)}`);
 }
 
+function appendSetCookie(res: ServerResponse, cookie: string): void {
+  const current = res.getHeader("set-cookie");
+  if (!current) {
+    res.setHeader("set-cookie", cookie);
+  } else if (Array.isArray(current)) {
+    res.setHeader("set-cookie", [...current, cookie]);
+  } else {
+    res.setHeader("set-cookie", [String(current), cookie]);
+  }
+}
+
+function setTempSessionCookie(res: ServerResponse, token: string, maxAgeSeconds: number, req?: IncomingMessage): void {
+  appendSetCookie(
+    res,
+    `${TEMP_SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}${getCookieFlags(req)}`
+  );
+}
+
+function clearTempSessionCookie(res: ServerResponse, req?: IncomingMessage): void {
+  appendSetCookie(res, `${TEMP_SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0${getCookieFlags(req)}`);
+}
+
+function mailboxIsExpired(mailbox: Mailbox): boolean {
+  return Boolean(mailbox.expiresAt && new Date(mailbox.expiresAt).getTime() <= Date.now());
+}
+
+function mailboxIsUsable(mailbox?: Mailbox): mailbox is Mailbox {
+  return Boolean(mailbox && !mailbox.deletedAt && !mailbox.disabledAt && !mailboxIsExpired(mailbox));
+}
+
+function normalizeFolder(value: unknown): MailFolder {
+  const folder = String(value || "inbox").toLowerCase();
+  if (["inbox", "sent", "spam", "trash"].includes(folder)) return folder as MailFolder;
+  return "inbox";
+}
+
+async function getTempSession(req: IncomingMessage, db: Db): Promise<AuthSession | null> {
+  const token = parseCookies(req)[TEMP_SESSION_COOKIE];
+  if (!token) return null;
+  const session = db.tempSessions[token];
+  if (!session || new Date(session.expiresAt).getTime() < Date.now()) return null;
+  const mailbox = db.mailboxes[session.email];
+  if (!mailbox || mailbox.kind !== "temporary" || !mailboxIsUsable(mailbox)) return null;
+  return { sessionId: token, mailbox, encPassword: session.encPassword };
+}
+
 function rateLimit(req: IncomingMessage, key: string, limit: number, windowMs: number): boolean {
   const bucketKey = `${key}:${clientIp(req)}`;
   const now = Date.now();
@@ -405,6 +605,7 @@ async function ensureDb(): Promise<void> {
       invites: {},
       mailboxes: {},
       sessions: {},
+      tempSessions: {},
       audit: []
     };
     await fs.writeFile(DB_PATH, JSON.stringify(initial, null, 2));
@@ -414,7 +615,19 @@ async function ensureDb(): Promise<void> {
 async function readDb(): Promise<Db> {
   await ensureDb();
   const raw = await fs.readFile(DB_PATH, "utf8");
-  return JSON.parse(raw);
+  const db = JSON.parse(raw) as Db;
+  db.invites ||= {};
+  db.mailboxes ||= {};
+  db.sessions ||= {};
+  db.tempSessions ||= {};
+  db.audit ||= [];
+  for (const mailbox of Object.values(db.mailboxes)) {
+    mailbox.kind ||= mailbox.expiresAt ? "temporary" : "permanent";
+    mailbox.quotaMb ||= mailbox.kind === "temporary" ? TEMP_QUOTA_MB : DEFAULT_QUOTA_MB;
+    mailbox.outboundDailyLimit ??= mailbox.kind === "temporary" ? TEMP_OUTBOUND_DAILY_LIMIT : DEFAULT_OUTBOUND_DAILY_LIMIT;
+    mailbox.webmailUrl ||= WEBMAIL_URL;
+  }
+  return db;
 }
 
 async function writeDb(db: Db): Promise<void> {
@@ -433,6 +646,28 @@ async function audit(db: Db, actor: string, event: string, details: JsonObject =
     details
   });
   db.audit = db.audit.slice(0, 1000);
+}
+
+async function cleanupExpiredTempMailboxes(db: Db): Promise<void> {
+  let changed = false;
+  for (const mailbox of Object.values(db.mailboxes)) {
+    if (mailbox.kind !== "temporary" || mailbox.deletedAt || !mailboxIsExpired(mailbox)) continue;
+    mailbox.disabledAt ||= nowIso();
+    for (const [token, session] of Object.entries(db.tempSessions)) {
+      if (session.email === mailbox.email) delete db.tempSessions[token];
+    }
+    try {
+      await deleteMailuMailbox(mailbox.email);
+      mailbox.deletedAt ||= nowIso();
+      await audit(db, mailbox.email, "temp_mailbox_deleted", { expiresAt: mailbox.expiresAt });
+    } catch (error) {
+      await audit(db, mailbox.email, "temp_mailbox_delete_failed", {
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+    changed = true;
+  }
+  if (changed) await writeDb(db);
 }
 
 function normalizeLocal(local: unknown): string {
@@ -512,11 +747,19 @@ async function getSession(req: IncomingMessage, db: Db): Promise<AuthSession | n
   const session = db.sessions[sessionId];
   if (!session || new Date(session.expiresAt).getTime() < Date.now()) return null;
   const mailbox = db.mailboxes[session.email];
-  if (!mailbox) return null;
+  if (!mailbox || mailbox.kind === "temporary" || !mailboxIsUsable(mailbox)) return null;
   return { sessionId, mailbox, encPassword: session.encPassword };
 }
 
-async function createMailuMailbox({ local, password, displayName }: MailuCreateArgs): Promise<MailuCreateResult> {
+function randomLocalPart(): string {
+  return `tmp-${crypto.randomBytes(5).toString("hex")}`;
+}
+
+function secondsUntil(iso: string): number {
+  return Math.max(0, Math.floor((new Date(iso).getTime() - Date.now()) / 1000));
+}
+
+async function createMailuMailbox({ local, password, displayName, kind = "permanent" }: MailuCreateArgs): Promise<MailuCreateResult> {
   if (MAILU_DRY_RUN) {
     return {
       provider: "dry-run",
@@ -547,9 +790,9 @@ async function createMailuMailbox({ local, password, displayName }: MailuCreateA
       email: `${local}@${MAIL_DOMAIN}`,
       raw_password: password,
       display_name: displayName || local,
-      quota_bytes: DEFAULT_QUOTA_MB * 1024 * 1024,
+      quota_bytes: (kind === "temporary" ? TEMP_QUOTA_MB : DEFAULT_QUOTA_MB) * 1024 * 1024,
       enabled: true,
-      comment: "Created by invite-mail-portal"
+      comment: kind === "temporary" ? "Created by Mailroom tempmail" : "Created by invite-mail-portal"
     })
   });
 
@@ -563,6 +806,38 @@ async function createMailuMailbox({ local, password, displayName }: MailuCreateA
     status: response.status,
     body: text ? safeJson(text) : null
   };
+}
+
+async function deleteMailuMailbox(email: string): Promise<MailuCreateResult> {
+  if (MAILU_DRY_RUN) {
+    return {
+      provider: "dry-run",
+      message: "MAILU_DRY_RUN is enabled; no Mailu delete call was made."
+    };
+  }
+
+  const base = env.MAILU_API_BASE;
+  const token = env.MAILU_API_TOKEN;
+  if (!base || !token) {
+    throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
+  }
+
+  const endpoint = MAILU_DELETE_USER_ENDPOINT.endsWith("/")
+    ? `${MAILU_DELETE_USER_ENDPOINT}${encodeURIComponent(email)}`
+    : `${MAILU_DELETE_USER_ENDPOINT}/${encodeURIComponent(email)}`;
+  const response = await fetch(new URL(endpoint, base).toString(), {
+    method: "DELETE",
+    signal: AbortSignal.timeout(15_000),
+    headers: {
+      authorization: `Bearer ${token}`,
+      "x-api-key": token
+    }
+  });
+  const text = await response.text();
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Mailu delete failed with ${response.status}: ${text.slice(0, 300)}`);
+  }
+  return { provider: "mailu", status: response.status, body: text ? safeJson(text) : null };
 }
 
 function safeJson(text: string): unknown {
@@ -780,6 +1055,7 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: 
 
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const db = await readDb();
+  await cleanupExpiredTempMailboxes(db);
 
   if (req.method === "GET" && url.pathname === "/api/captcha") {
     const challenge = createCaptcha();
@@ -837,7 +1113,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
     let providerResult;
     try {
-      providerResult = await createMailuMailbox({ local, password: body.password, displayName });
+      providerResult = await createMailuMailbox({ local, password: body.password, displayName, kind: "permanent" });
     } catch (error) {
       console.error("[ERROR] Mailu mailbox creation failed:", error);
       await audit(db, email, "mailu_create_failed", { message: error.message });
@@ -851,6 +1127,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       domain: MAIL_DOMAIN,
       email,
       displayName,
+      kind: "permanent",
       status: MAILU_DRY_RUN ? "dry-run" : "active",
       quotaMb: DEFAULT_QUOTA_MB,
       outboundDailyLimit: DEFAULT_OUTBOUND_DAILY_LIMIT,
@@ -883,7 +1160,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const body = await parseBody(req);
     const email = String(body.email || "").trim().toLowerCase();
     const mailbox = db.mailboxes[email];
-    if (!mailbox || !verifyPassword(body.password, mailbox.passwordHash)) {
+    if (!mailbox || mailbox.kind === "temporary" || !mailboxIsUsable(mailbox) || !verifyPassword(body.password, mailbox.passwordHash)) {
       await audit(db, email || "unknown", "login_failed", { ip: clientIp(req) });
       await writeDb(db);
       return json(res, 401, { error: "Email or password is incorrect." });
@@ -915,7 +1192,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     try {
       const password = decrypt(session.encPassword);
-      const emails = await fetchEmails(session.mailbox.email, password);
+      const folder = normalizeFolder(url.searchParams.get("folder"));
+      const emails = await fetchEmails(session.mailbox.email, password, folder);
       return json(res, 200, { emails });
     } catch (error) {
       console.error("[ERROR] Failed to fetch emails via IMAP:", error);
@@ -930,14 +1208,146 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return json(res, 400, { error: "Please log in again to sync your emails." });
     }
     const uid = url.searchParams.get("uid");
+    const folder = normalizeFolder(url.searchParams.get("folder"));
     if (!uid) return json(res, 400, { error: "Missing uid parameter." });
     try {
       const password = decrypt(session.encPassword);
-      const email = await fetchEmailBody(session.mailbox.email, password, uid);
+      const email = await fetchEmailBody(session.mailbox.email, password, uid, folder);
       return json(res, 200, { email });
     } catch (error) {
       console.error("[ERROR] Failed to fetch email body via IMAP:", error);
       return json(res, 500, { error: error.message });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/me/send") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    if (!session.encPassword) return json(res, 400, { error: "Please log in again to send mail." });
+    if (session.mailbox.kind === "temporary") return json(res, 403, { error: "Temporary mailboxes are receive-only." });
+    if (!rateLimit(req, "send", 25, 15 * 60 * 1000)) return json(res, 429, { error: "Too many sends. Try again later." });
+    const body = await parseBody(req);
+    const recipients = normalizeRecipients(body.to);
+    const subject = String(body.subject || "").trim().slice(0, 180) || "(No subject)";
+    const messageBody = String(body.body || "").slice(0, 20_000);
+    if (!recipients.length) return json(res, 400, { error: "Enter at least one valid recipient." });
+    if (!messageBody.trim()) return json(res, 400, { error: "Message body is required." });
+    try {
+      const password = decrypt(session.encPassword);
+      const result = await sendPlainEmail(session.mailbox.email, password, recipients, subject, messageBody);
+      await audit(db, session.mailbox.email, "email_sent", { to: recipients, subject, dryRun: MAILU_DRY_RUN });
+      await writeDb(db);
+      return json(res, 200, { result });
+    } catch (error) {
+      return json(res, 502, { error: error instanceof Error ? error.message : "Failed to send email." });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/me/email/move") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    if (!session.encPassword) return json(res, 400, { error: "Please log in again to move mail." });
+    const body = await parseBody(req);
+    const uid = String(body.uid || "").trim();
+    const fromFolder = normalizeFolder(body.fromFolder);
+    const toFolder = normalizeFolder(body.toFolder);
+    if (!uid) return json(res, 400, { error: "Missing uid." });
+    if (fromFolder === toFolder) return json(res, 400, { error: "Choose a different destination folder." });
+    try {
+      const password = decrypt(session.encPassword);
+      const result = await moveEmail(session.mailbox.email, password, uid, fromFolder, toFolder);
+      await audit(db, session.mailbox.email, "email_moved", { uid, fromFolder, toFolder, dryRun: MAILU_DRY_RUN });
+      await writeDb(db);
+      return json(res, 200, { result });
+    } catch (error) {
+      return json(res, 502, { error: error instanceof Error ? error.message : "Failed to move email." });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/temp-mailboxes") {
+    if (!rateLimit(req, "temp-create", 12, 15 * 60 * 1000)) return json(res, 429, { error: "Too many temp inboxes. Try again later." });
+    const body = await parseBody(req);
+    if (!verifyCaptcha(body.captcha || {})) return json(res, 400, { error: "Captcha did not match." });
+    const durationHours = Number(body.durationHours) === 24 ? 24 : 1;
+    let local = randomLocalPart();
+    for (let attempt = 0; attempt < 8 && db.mailboxes[`${local}@${MAIL_DOMAIN}`]; attempt += 1) {
+      local = randomLocalPart();
+    }
+    const email = `${local}@${MAIL_DOMAIN}`;
+    if (db.mailboxes[email]) return json(res, 409, { error: "Could not generate a temp address. Try again." });
+    const password = `${randomToken(18)}Aa1`;
+    const expiresAt = new Date(Date.now() + durationHours * 60 * 60 * 1000).toISOString();
+    let providerResult;
+    try {
+      providerResult = await createMailuMailbox({ local, password, displayName: "Temporary mailbox", kind: "temporary" });
+    } catch (error) {
+      await audit(db, email, "temp_mailu_create_failed", { message: error instanceof Error ? error.message : String(error) });
+      await writeDb(db);
+      return json(res, 502, { error: error instanceof Error ? error.message : "Temp mailbox creation failed." });
+    }
+    const mailbox: Mailbox = {
+      id: randomToken(12),
+      local,
+      domain: MAIL_DOMAIN,
+      email,
+      displayName: "Temporary mailbox",
+      kind: "temporary",
+      status: MAILU_DRY_RUN ? "dry-run" : "active",
+      quotaMb: TEMP_QUOTA_MB,
+      outboundDailyLimit: TEMP_OUTBOUND_DAILY_LIMIT,
+      passwordHash: hashPassword(password),
+      createdAt: nowIso(),
+      expiresAt,
+      webmailUrl: WEBMAIL_URL,
+      providerResult
+    };
+    db.mailboxes[email] = mailbox;
+    const token = randomToken(32);
+    db.tempSessions[token] = { email, createdAt: nowIso(), expiresAt, encPassword: encrypt(password) };
+    await audit(db, email, "temp_mailbox_created", { durationHours, dryRun: MAILU_DRY_RUN });
+    await writeDb(db);
+    setTempSessionCookie(res, token, secondsUntil(expiresAt), req);
+    return json(res, 201, { mailbox: publicMailbox(mailbox), redirectTo: "/temp" });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/temp-mailboxes/me") {
+    const session = await getTempSession(req, db);
+    if (!session) {
+      clearTempSessionCookie(res, req);
+      return json(res, 401, { error: "No active temp inbox." });
+    }
+    return json(res, 200, { mailbox: publicMailbox(session.mailbox) });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/temp-mailboxes/emails") {
+    const session = await getTempSession(req, db);
+    if (!session) {
+      clearTempSessionCookie(res, req);
+      return json(res, 401, { error: "No active temp inbox." });
+    }
+    try {
+      const password = decrypt(session.encPassword || "");
+      const emails = await fetchEmails(session.mailbox.email, password, "inbox");
+      return json(res, 200, { emails });
+    } catch (error) {
+      return json(res, 500, { error: error instanceof Error ? error.message : "Failed to sync temp inbox." });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/temp-mailboxes/email") {
+    const session = await getTempSession(req, db);
+    if (!session) {
+      clearTempSessionCookie(res, req);
+      return json(res, 401, { error: "No active temp inbox." });
+    }
+    const uid = url.searchParams.get("uid");
+    if (!uid) return json(res, 400, { error: "Missing uid parameter." });
+    try {
+      const password = decrypt(session.encPassword || "");
+      const email = await fetchEmailBody(session.mailbox.email, password, uid, "inbox");
+      return json(res, 200, { email });
+    } catch (error) {
+      return json(res, 500, { error: error instanceof Error ? error.message : "Failed to load temp message." });
     }
   }
 
@@ -965,8 +1375,14 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
 
     if (req.method === "GET" && url.pathname === "/api/admin/summary") {
+      const publicMailboxes = Object.values(db.mailboxes).map(publicMailbox);
       return json(res, 200, {
-        mailboxes: Object.values(db.mailboxes).map(publicMailbox),
+        mailboxes: publicMailboxes,
+        mailboxCounts: {
+          permanent: publicMailboxes.filter((mailbox) => mailbox.kind !== "temporary").length,
+          temporary: publicMailboxes.filter((mailbox) => mailbox.kind === "temporary" && !mailbox.deletedAt).length,
+          expiredTemporary: publicMailboxes.filter((mailbox) => mailbox.kind === "temporary" && Boolean(mailbox.expiresAt) && new Date(mailbox.expiresAt!).getTime() <= Date.now()).length
+        },
         invites: Object.values(db.invites).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 50),
         audit: db.audit.slice(0, 50),
         dryRun: MAILU_DRY_RUN
@@ -1009,6 +1425,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (url.pathname.startsWith("/api/")) return handleApi(req, res, url);
 
     const db = await readDb();
+    await cleanupExpiredTempMailboxes(db);
     const session = await getSession(req, db);
 
     if (req.method === "GET" && url.pathname === "/") return json(res, 200, { ok: true, service: "mail-portal-api", client: CLIENT_ORIGIN });
@@ -1045,4 +1462,22 @@ http.createServer(handle).listen(PORT, () => {
   console.log(`Invite mail portal running at http://localhost:${PORT}`);
   console.log(`Domain: ${MAIL_DOMAIN}; Mailu dry-run: ${MAILU_DRY_RUN}`);
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

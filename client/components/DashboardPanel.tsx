@@ -5,10 +5,12 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import type { PublicMailbox, EmailMessage } from "@/lib/types";
 
+type MailFolder = "inbox" | "sent" | "spam" | "trash";
+
 type Folder = {
+  id: MailFolder;
   label: string;
   count?: number;
-  active?: boolean;
 };
 
 type IconProps = {
@@ -16,11 +18,10 @@ type IconProps = {
 };
 
 const folders: Folder[] = [
-  { label: "Inbox", active: true },
-  { label: "Sent" },
-  { label: "Drafts" },
-  { label: "Spam" },
-  { label: "Trash" }
+  { id: "inbox", label: "Inbox" },
+  { id: "sent", label: "Sent" },
+  { id: "spam", label: "Spam" },
+  { id: "trash", label: "Trash" }
 ];
 
 function RefreshIcon({ className = "" }: IconProps) {
@@ -118,6 +119,14 @@ export function DashboardPanel() {
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(false);
   const [mobileView, setMobileView] = useState<"list" | "preview">("list");
+  const [activeFolder, setActiveFolder] = useState<MailFolder>("inbox");
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeTo, setComposeTo] = useState("");
+  const [composeSubject, setComposeSubject] = useState("");
+  const [composeBody, setComposeBody] = useState("");
+  const [composeMessage, setComposeMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [moving, setMoving] = useState(false);
 
   const fetchMailboxAndEmails = async () => {
     try {
@@ -132,7 +141,7 @@ export function DashboardPanel() {
   const fetchEmailsList = async () => {
     setRefreshing(true);
     try {
-      const result = await api<{ emails: EmailMessage[] }>("/api/me/emails");
+      const result = await api<{ emails: EmailMessage[] }>(`/api/me/emails?folder=${activeFolder}`);
       setEmails(result.emails);
       setEmailsError("");
       setSelectedEmailUid((current) => {
@@ -155,12 +164,12 @@ export function DashboardPanel() {
     if (mailbox) {
       fetchEmailsList();
     }
-  }, [mailbox]);
+  }, [mailbox, activeFolder]);
 
   useEffect(() => {
     if (selectedEmail && !emailBodies[selectedEmail.uid]) {
       setBodyLoading(true);
-      api<{ email: EmailBodyDetails }>(`/api/me/email?uid=${selectedEmail.uid}`)
+      api<{ email: EmailBodyDetails }>(`/api/me/email?folder=${activeFolder}&uid=${selectedEmail.uid}`)
         .then((res) => {
           setEmailBodies((prev) => ({
             ...prev,
@@ -177,7 +186,7 @@ export function DashboardPanel() {
       setBodyLoading(false);
     }
     setShowDetails(false);
-  }, [selectedEmailUid]);
+  }, [selectedEmailUid, activeFolder]);
 
   const unreadCount = emails?.length ?? 0;
   const storageUsedMb = 0;
@@ -199,7 +208,8 @@ export function DashboardPanel() {
   const selectedEmailBody = selectedEmail ? emailBodies[selectedEmail.uid] : null;
 
   const mailboxInitial = mailbox?.displayName?.[0] ?? mailbox?.local?.[0] ?? "M";
-  const activeFolders = folders.map((folder) => folder.label === "Inbox" ? { ...folder, count: unreadCount } : folder);
+  const activeFolders = folders.map((folder) => folder.id === "inbox" ? { ...folder, count: unreadCount } : folder);
+  const activeFolderLabel = folders.find((folder) => folder.id === activeFolder)?.label ?? "Inbox";
 
   async function copyMailboxAddress() {
     if (!mailbox) return;
@@ -209,6 +219,55 @@ export function DashboardPanel() {
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
       setCopied(false);
+    }
+  }
+
+  function openReply() {
+    if (!selectedEmail) return;
+    setComposeTo(senderAddress(selectedEmail.from));
+    setComposeSubject(selectedEmail.subject?.toLowerCase().startsWith("re:") ? selectedEmail.subject : `Re: ${selectedEmail.subject || "(No subject)"}`);
+    setComposeBody(`\n\nOn ${formatFullDate(selectedEmail.date)}, ${senderName(selectedEmail.from)} wrote:`);
+    setComposeMessage("");
+    setComposeOpen(true);
+  }
+
+  async function submitCompose(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSending(true);
+    setComposeMessage("Sending...");
+    try {
+      await api<{ result: unknown }>("/api/me/send", {
+        method: "POST",
+        body: JSON.stringify({ to: composeTo, subject: composeSubject, body: composeBody, replyToUid: selectedEmail?.uid })
+      });
+      setComposeMessage("Sent.");
+      setComposeOpen(false);
+      setComposeTo("");
+      setComposeSubject("");
+      setComposeBody("");
+      if (activeFolder === "sent") await fetchEmailsList();
+    } catch (error) {
+      setComposeMessage(error instanceof Error ? error.message : "Failed to send email.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function moveSelected(toFolder: MailFolder) {
+    if (!selectedEmail || toFolder === activeFolder) return;
+    setMoving(true);
+    try {
+      await api<{ result: unknown }>("/api/me/email/move", {
+        method: "POST",
+        body: JSON.stringify({ uid: selectedEmail.uid, fromFolder: activeFolder, toFolder })
+      });
+      setSelectedEmailUid(null);
+      setEmailBodies({});
+      await fetchEmailsList();
+    } catch (error) {
+      setEmailsError(error instanceof Error ? error.message : "Failed to move email.");
+    } finally {
+      setMoving(false);
     }
   }
 
@@ -299,13 +358,14 @@ export function DashboardPanel() {
         </div>
 
         <div className="grid content-start gap-5 p-5">
-          <a className="button button-primary min-h-[44px] w-full px-4" href="/webmail">Compose in webmail</a>
+          <button className="button button-primary min-h-[44px] w-full px-4" type="button" onClick={() => setComposeOpen(true)}>Compose</button>
           <nav className="grid gap-1" aria-label="Mailbox folders">
             {activeFolders.map((folder) => (
               <button
-                key={folder.label}
+                key={folder.id}
                 type="button"
-                className={`flex min-h-11 items-center justify-between border px-3 text-left text-sm font-bold transition-colors ${folder.active ? "border-cta bg-wash text-cta" : "border-transparent text-muted hover:border-line hover:bg-white hover:text-ink"}`}
+                onClick={() => setActiveFolder(folder.id)}
+                className={`flex min-h-11 items-center justify-between border px-3 text-left text-sm font-bold transition-colors ${activeFolder === folder.id ? "border-cta bg-wash text-cta" : "border-transparent text-muted hover:border-line hover:bg-white hover:text-ink"}`}
               >
                 <span className="flex items-center gap-2"><MailIcon className="h-4 w-4" />{folder.label}</span>
                 {typeof folder.count === "number" ? <span className="rounded-full bg-white px-2 py-0.5 text-xs text-cta">{folder.count}</span> : null}
@@ -401,7 +461,7 @@ export function DashboardPanel() {
                 </button>
                 <div>
                   <p className="eyebrow m-0 max-md:text-[9px] max-md:tracking-wider">Mailbox dashboard</p>
-                  <h1 className="mt-2 max-md:mt-1 text-2xl max-md:text-lg font-extrabold tracking-[-0.02em] text-ink">Inbox</h1>
+                  <h1 className="mt-2 max-md:mt-1 text-2xl max-md:text-lg font-extrabold tracking-[-0.02em] text-ink">{activeFolderLabel}</h1>
                 </div>
               </div>
               <button
@@ -509,7 +569,15 @@ export function DashboardPanel() {
                 <p className="mt-1 truncate text-sm max-md:text-xs font-medium text-muted">{selectedEmail ? senderAddress(selectedEmail.from) : mailbox.email}</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {selectedEmail ? (
+                <>
+                  <button type="button" onClick={openReply} className="button button-secondary min-h-[36px] px-3 text-xs">Reply</button>
+                  {activeFolder !== "inbox" ? <button type="button" onClick={() => moveSelected("inbox")} disabled={moving} className="button button-secondary min-h-[36px] px-3 text-xs">Inbox</button> : null}
+                  {activeFolder !== "spam" ? <button type="button" onClick={() => moveSelected("spam")} disabled={moving} className="button button-secondary min-h-[36px] px-3 text-xs">Spam</button> : null}
+                  {activeFolder !== "trash" ? <button type="button" onClick={() => moveSelected("trash")} disabled={moving} className="button button-secondary min-h-[36px] px-3 text-xs">Trash</button> : null}
+                </>
+              ) : null}
               <button
                 type="button"
                 onClick={copyMailboxAddress}
@@ -655,8 +723,36 @@ export function DashboardPanel() {
           </div>
         </section>
       </section>
+
+      {composeOpen ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/30 p-4 backdrop-blur-sm">
+          <form className="grid w-full max-w-[620px] gap-4 border border-line bg-white p-6 shadow-soft" onSubmit={submitCompose}>
+            <div className="flex items-start justify-between gap-4 border-b border-line pb-4">
+              <div>
+                <p className="eyebrow m-0">Permanent mail</p>
+                <h2 className="mt-2 text-2xl font-extrabold text-ink">Compose</h2>
+              </div>
+              <button type="button" className="grid h-10 w-10 place-items-center border border-line text-ink hover:text-cta" onClick={() => setComposeOpen(false)} aria-label="Close compose">x</button>
+            </div>
+            <label className="label">To<input className="field" value={composeTo} onChange={(event) => setComposeTo(event.target.value)} placeholder="friend@example.com" required /></label>
+            <label className="label">Subject<input className="field" value={composeSubject} onChange={(event) => setComposeSubject(event.target.value)} placeholder="Subject" required /></label>
+            <label className="label">Message<textarea className="min-h-48 w-full border border-line bg-white p-3 text-ink focus:outline-2 focus:outline-cta" value={composeBody} onChange={(event) => setComposeBody(event.target.value)} required /></label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="min-h-6 text-sm font-bold text-muted">{composeMessage}</p>
+              <button className="button button-primary" type="submit" disabled={sending}>{sending ? "Sending..." : "Send"}</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </main>
   );
 }
+
+
+
+
+
+
+
 
 
