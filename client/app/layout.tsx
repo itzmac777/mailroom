@@ -20,7 +20,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en">
       <body className="font-sans antialiased">
-        <div className="bg-soft px-5 py-3 text-center text-sm text-ink">Private email infrastructure for teams that care about deliverability.</div>
         <Header isLoggedIn={isLoggedIn} />
         {children}
       </body>

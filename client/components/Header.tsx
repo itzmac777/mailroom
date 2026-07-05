@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 
 type HeaderProps = {
@@ -9,12 +10,21 @@ type HeaderProps = {
 
 export function Header({ isLoggedIn }: HeaderProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const pathname = usePathname();
+  const isDashboard = pathname === "/dashboard";
 
   return (
     <header className="relative border-b border-line bg-white">
-      <div className="mx-auto flex min-h-[72px] max-w-[1320px] items-center justify-between gap-8 px-8 py-2 max-md:px-5">
+      {/* Top Banner (hidden on dashboard) */}
+      {!isDashboard && (
+        <div className="bg-soft px-5 py-3 text-center text-sm text-ink border-b border-line">
+          Private email infrastructure for teams that care about deliverability.
+        </div>
+      )}
+
+      <div className="mx-auto flex min-h-[72px] max-md:min-h-[56px] max-w-[1320px] items-center justify-between gap-8 px-8 py-2 max-md:px-4">
         {/* Logo */}
-        <Link href="/" className="text-[36px] font-semibold leading-none tracking-[-0.03em] text-ink" aria-label="Mail Portal home">
+        <Link href="/" className="text-[36px] max-md:text-[24px] font-semibold leading-none tracking-[-0.03em] text-ink" aria-label="Mail Portal home">
           Mailroom
         </Link>
 
@@ -39,16 +49,16 @@ export function Header({ isLoggedIn }: HeaderProps) {
         <button
           type="button"
           onClick={() => setIsOpen((prev) => !prev)}
-          className="hidden max-md:grid h-11 w-11 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta focus:outline-none"
+          className="hidden max-md:grid h-8 w-8 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta focus:outline-none"
           aria-label="Toggle navigation menu"
         >
           {isOpen ? (
-            <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="h-6 w-6 max-md:h-4 max-md:w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           ) : (
-            <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="h-6 w-6 max-md:h-4 max-md:w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="4" y1="12" x2="20" y2="12" />
               <line x1="4" y1="6" x2="20" y2="6" />
               <line x1="4" y1="18" x2="20" y2="18" />

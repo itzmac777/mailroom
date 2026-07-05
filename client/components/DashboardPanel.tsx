@@ -117,6 +117,7 @@ export function DashboardPanel() {
   const [bodyLoading, setBodyLoading] = useState(false);
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(false);
+  const [mobileView, setMobileView] = useState<"list" | "preview">("list");
 
   const fetchMailboxAndEmails = async () => {
     try {
@@ -343,7 +344,7 @@ export function DashboardPanel() {
   if (!mailbox) return <main className="p-12 text-muted max-md:p-5">Loading dashboard...</main>;
 
   return (
-    <main className="bg-[#fbfaf7] px-6 py-7 max-md:px-4 max-md:py-4">
+    <main className="bg-[#fbfaf7] px-6 py-7 max-md:px-0 max-md:py-0">
       {/* Left Sidebar Mobile Drawer */}
       {isLeftSidebarOpen && (
         <>
@@ -376,48 +377,48 @@ export function DashboardPanel() {
         </>
       )}
 
-      <section className="mx-auto grid min-h-[calc(100vh-178px)] max-w-[1480px] grid-cols-[260px_minmax(360px,460px)_1fr] overflow-hidden border border-line bg-white shadow-soft max-xl:grid-cols-[220px_minmax(330px,430px)_1fr] max-lg:grid-cols-1">
+      <section className="mx-auto grid min-h-[calc(100vh-178px)] max-md:min-h-[calc(100vh-56px)] max-w-[1480px] grid-cols-[260px_minmax(360px,460px)_1fr] overflow-hidden border border-line max-md:border-0 bg-white shadow-soft max-xl:grid-cols-[220px_minmax(330px,430px)_1fr] max-lg:grid-cols-1">
         {/* Desktop Sidebar (hidden on mobile) */}
         <aside className="grid border-r border-line bg-soft/45 max-lg:hidden">
           {renderSidebarContent()}
         </aside>
 
-        <section className="grid min-h-0 grid-rows-[auto_1fr] border-r border-line max-lg:border-b max-lg:border-r-0">
-          <header className="border-b border-line bg-white p-5">
+        <section className={`grid min-h-0 grid-rows-[auto_1fr] border-r border-line max-lg:border-b max-lg:border-r-0 ${mobileView === "preview" ? "max-lg:hidden" : "max-lg:grid"}`}>
+          <header className="border-b border-line bg-white p-5 max-md:p-3.5">
             <div className="flex items-start justify-between gap-4">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 max-md:gap-2">
                 <button
                   type="button"
                   onClick={() => setIsLeftSidebarOpen(true)}
-                  className="hidden max-lg:grid h-10 w-10 shrink-0 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta transition-colors"
+                  className="hidden max-lg:grid h-10 w-10 max-md:h-8 max-md:w-8 shrink-0 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta transition-colors"
                   aria-label="Toggle mailbox details"
                 >
-                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg className="h-5 w-5 max-md:h-4 max-md:w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="3" y1="12" x2="21" y2="12" />
                     <line x1="3" y1="6" x2="21" y2="6" />
                     <line x1="3" y1="18" x2="21" y2="18" />
                   </svg>
                 </button>
                 <div>
-                  <p className="eyebrow m-0">Mailbox dashboard</p>
-                  <h1 className="mt-2 text-2xl font-extrabold tracking-[-0.02em] text-ink">Inbox</h1>
+                  <p className="eyebrow m-0 max-md:text-[9px] max-md:tracking-wider">Mailbox dashboard</p>
+                  <h1 className="mt-2 max-md:mt-1 text-2xl max-md:text-lg font-extrabold tracking-[-0.02em] text-ink">Inbox</h1>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={fetchEmailsList}
                 disabled={emailsLoading || refreshing}
-                className="grid h-11 w-11 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta disabled:opacity-50"
+                className="grid h-11 w-11 max-md:h-8 max-md:w-8 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta disabled:opacity-50"
                 aria-label="Sync mail"
                 title="Sync mail"
               >
-                <RefreshIcon className={`h-5 w-5 ${refreshing ? "animate-spin" : ""}`} />
+                <RefreshIcon className={`h-5 w-5 max-md:h-4 max-md:w-4 ${refreshing ? "animate-spin" : ""}`} />
               </button>
             </div>
-            <label className="mt-5 grid grid-cols-[auto_1fr] items-center gap-2 border border-line bg-[#fbfaf7] px-3 focus-within:border-cta">
-              <SearchIcon className="h-5 w-5 text-muted" />
+            <label className="mt-5 max-md:mt-3 grid grid-cols-[auto_1fr] items-center gap-2 border border-line bg-[#fbfaf7] px-3 max-md:px-2 focus-within:border-cta">
+              <SearchIcon className="h-5 w-5 max-md:h-4 max-md:w-4 text-muted" />
               <input
-                className="min-h-11 border-0 bg-transparent text-sm text-ink outline-none placeholder:text-muted/70 focus:outline-none"
+                className="min-h-11 max-md:min-h-8 border-0 bg-transparent text-sm text-ink outline-none placeholder:text-muted/70 focus:outline-none"
                 placeholder="Search messages"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -464,16 +465,19 @@ export function DashboardPanel() {
                     <button
                       key={email.uid}
                       type="button"
-                      onClick={() => setSelectedEmailUid(email.uid)}
-                      className={`grid w-full grid-cols-[auto_1fr_auto] gap-4 p-5 text-left transition-colors border-b border-line/30 ${active ? "bg-wash" : "bg-white hover:bg-[#fbfaf7]"}`}
+                      onClick={() => {
+                        setSelectedEmailUid(email.uid);
+                        setMobileView("preview");
+                      }}
+                      className={`grid w-full grid-cols-[auto_1fr_auto] gap-4 p-5 max-md:p-4 text-left transition-colors border-b border-line/30 ${active ? "bg-wash" : "bg-white hover:bg-[#fbfaf7]"}`}
                     >
-                      <span className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${active ? "bg-cta" : "bg-[#f05a28]"}`} aria-hidden="true" />
+                      <span className={`mt-2 h-2 w-2 rounded-full shrink-0 ${active ? "bg-cta" : "bg-[#f05a28]"}`} aria-hidden="true" />
                       <span className="min-w-0">
-                        <span className="block truncate text-[15px] font-extrabold text-ink">
+                        <span className="block truncate text-[15px] max-md:text-[14px] font-extrabold text-ink">
                           {email.subject || "(No subject)"}
                         </span>
-                        <span className="mt-1.5 block truncate text-sm text-muted">
-                          <strong className="font-semibold text-ink/80">{senderName(email.from)}</strong>: {email.subject || "(No subject)"}
+                        <span className="mt-1 block truncate text-xs text-muted">
+                          {senderName(email.from)} &lt;{senderAddress(email.from)}&gt;
                         </span>
                       </span>
                       <span className="whitespace-nowrap text-xs font-semibold text-muted/80">{formatMessageDate(email.date)}</span>
@@ -485,35 +489,49 @@ export function DashboardPanel() {
           </div>
         </section>
 
-        <section className="grid min-h-0 grid-rows-[auto_1fr] bg-white">
-          <header className="flex min-h-[86px] items-center justify-between gap-4 border-b border-line px-7 py-5 max-md:block max-md:px-5">
-            <div className="min-w-0">
-              <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-cta">Message preview</p>
-              <p className="mt-1 truncate text-sm font-medium text-muted">{selectedEmail ? senderAddress(selectedEmail.from) : mailbox.email}</p>
+        <section className={`grid min-h-0 grid-rows-[auto_1fr] bg-white ${mobileView === "list" ? "max-lg:hidden" : "max-lg:grid"}`}>
+          <header className="flex min-h-[86px] max-md:min-h-[64px] items-center justify-between gap-4 border-b border-line px-7 py-5 max-md:px-4 max-md:py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              {/* Mobile Back Button */}
+              <button
+                type="button"
+                onClick={() => setMobileView("list")}
+                className="hidden max-lg:grid h-10 w-10 max-md:h-8 max-md:w-8 shrink-0 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta transition-colors"
+                aria-label="Back to inbox"
+              >
+                <svg className="h-5 w-5 max-md:h-4 max-md:w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="19" y1="12" x2="5" y2="12" />
+                  <polyline points="12 19 5 12 12 5" />
+                </svg>
+              </button>
+              <div className="min-w-0">
+                <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-cta max-md:text-[9px]">Message preview</p>
+                <p className="mt-1 truncate text-sm max-md:text-xs font-medium text-muted">{selectedEmail ? senderAddress(selectedEmail.from) : mailbox.email}</p>
+              </div>
             </div>
-            <div className="flex items-center gap-3 max-md:mt-4">
+            <div className="flex items-center gap-3 max-md:gap-2">
               <button
                 type="button"
                 onClick={copyMailboxAddress}
-                className="grid h-11 w-11 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta"
+                className="grid h-11 w-11 max-md:h-8 max-md:w-8 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta"
                 aria-label="Copy mailbox address"
                 title={copied ? "Copied" : "Copy mailbox address"}
               >
-                <CopyIcon className="h-5 w-5" />
+                <CopyIcon className="h-5 w-5 max-md:h-4 max-md:w-4" />
               </button>
-              <a className="button button-secondary min-h-[44px] px-4" href="/logout">Logout</a>
-              <a className="button button-primary min-h-[44px] px-4" href="/webmail">Open webmail</a>
+              <a className="button button-secondary min-h-[44px] max-md:min-h-[32px] px-4 max-md:px-2.5 max-md:text-xs" href="/logout">Logout</a>
+              <a className="button button-primary min-h-[44px] max-md:min-h-[32px] px-4 max-md:px-2.5 max-md:text-xs" href="/webmail">Open webmail</a>
             </div>
           </header>
 
-          <div className="min-h-0 overflow-y-auto p-7 max-md:p-5">
+          <div className="min-h-0 overflow-y-auto p-7 max-md:p-4">
             {selectedEmail ? (
               <article className="mx-auto max-w-[780px]">
-                <div className="border-b border-line pb-6">
+                <div className="border-b border-line pb-6 max-md:pb-4">
                   {/* Subject and Date line */}
-                  <div className="flex flex-wrap items-baseline gap-3 pb-3 mb-5">
+                  <div className="flex flex-wrap items-baseline gap-3 pb-3 mb-5 max-md:mb-3">
                     <span className="h-2 w-2 rounded-full bg-cta shrink-0 self-center" />
-                    <h2 className="text-xl font-bold tracking-tight text-ink">
+                    <h2 className="text-xl max-md:text-base font-bold tracking-tight text-ink">
                       {selectedEmail.subject || "(No subject)"}
                     </h2>
                     <span className="text-xs font-medium text-muted">
@@ -522,14 +540,14 @@ export function DashboardPanel() {
                   </div>
 
                   {/* Sender details and 'to me' dropdown */}
-                  <div className="relative flex items-start gap-3 mt-4">
-                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-wash text-sm font-extrabold text-cta">
+                  <div className="relative flex items-start gap-3 mt-4 max-md:mt-3">
+                    <span className="grid h-10 w-10 max-md:h-8 max-md:w-8 shrink-0 place-items-center rounded-full bg-wash text-sm max-md:text-xs font-extrabold text-cta">
                       {senderName(selectedEmail.from)[0]?.toUpperCase() ?? "M"}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="text-sm">
+                      <div className="text-sm max-md:text-xs">
                         <strong className="font-semibold text-ink">{senderName(selectedEmail.from)}</strong>{" "}
-                        <span className="text-muted/80 text-xs font-medium">&lt;{senderAddress(selectedEmail.from)}&gt;</span>
+                        <span className="text-muted/80 text-xs max-md:text-[10px] font-medium">&lt;{senderAddress(selectedEmail.from)}&gt;</span>
                       </div>
                       <div className="relative mt-0.5">
                         <button
@@ -552,7 +570,7 @@ export function DashboardPanel() {
                         </button>
 
                         {showDetails && (
-                          <div className="absolute left-0 top-full z-20 mt-2 w-full max-w-md border border-line bg-white p-4 shadow-soft rounded-sm">
+                          <div className="absolute left-0 top-full z-20 mt-2 w-full max-w-md border border-line bg-white p-4 max-md:p-3 shadow-soft rounded-sm">
                             <table className="w-full text-xs border-collapse">
                               <tbody>
                                 {[
@@ -577,7 +595,7 @@ export function DashboardPanel() {
                 </div>
 
                 {/* Email Body Content */}
-                <div className="py-8">
+                <div className="py-8 max-md:py-4">
                   {bodyLoading ? (
                     <div className="grid gap-3 py-4 animate-pulse">
                       <div className="h-4 bg-soft w-full rounded" />
@@ -586,7 +604,7 @@ export function DashboardPanel() {
                       <div className="h-4 bg-soft w-11/12 rounded" />
                     </div>
                   ) : selectedEmailBody?.html ? (
-                    <div className="relative w-full h-[550px] border border-line/40 rounded-sm overflow-hidden bg-white">
+                    <div className="relative w-full h-[550px] max-md:h-[400px] border border-line/40 rounded-sm overflow-hidden bg-white">
                       <iframe
                         srcDoc={`
                           <!DOCTYPE html>
@@ -614,25 +632,25 @@ export function DashboardPanel() {
                       />
                     </div>
                   ) : (
-                    <div className="whitespace-pre-wrap font-sans text-[15px] leading-7 text-muted bg-[#faf9f6]/40 p-6 border border-line/40 rounded-sm">
+                    <div className="whitespace-pre-wrap font-sans text-[15px] max-md:text-sm leading-7 max-md:leading-6 text-muted bg-[#faf9f6]/40 p-6 max-md:p-4 border border-line/40 rounded-sm">
                       {selectedEmailBody?.body || "No message body content."}
                     </div>
                   )}
                 </div>
 
-                <div className="border-t border-line/50 pt-6 mt-4">
+                <div className="border-t border-line/50 pt-6 mt-4 max-md:pt-4 max-md:mt-2">
                   <div className="grid grid-cols-3 border border-line bg-[#fbfaf7] text-sm max-md:grid-cols-1">
-                    <div className="border-r border-line p-4 max-md:border-b max-md:border-r-0">
-                      <span className="block font-bold text-muted">Mailbox</span>
-                      <strong className="mt-1 block break-words text-ink">{mailbox.email}</strong>
+                    <div className="border-r border-line p-4 max-md:p-3 max-md:border-b max-md:border-r-0">
+                      <span className="block font-bold text-muted text-xs">Mailbox</span>
+                      <strong className="mt-1 block break-words text-ink text-xs">{mailbox.email}</strong>
                     </div>
-                    <div className="border-r border-line p-4 max-md:border-b max-md:border-r-0">
-                      <span className="block font-bold text-muted">Quota</span>
-                      <strong className="mt-1 block text-ink">{mailbox.quotaMb} MB</strong>
+                    <div className="border-r border-line p-4 max-md:p-3 max-md:border-b max-md:border-r-0">
+                      <span className="block font-bold text-muted text-xs">Quota</span>
+                      <strong className="mt-1 block text-ink text-xs">{mailbox.quotaMb} MB</strong>
                     </div>
-                    <div className="p-4">
-                      <span className="block font-bold text-muted">Created</span>
-                      <strong className="mt-1 block text-ink">{new Date(mailbox.createdAt).toLocaleDateString()}</strong>
+                    <div className="p-4 max-md:p-3">
+                      <span className="block font-bold text-muted text-xs">Created</span>
+                      <strong className="mt-1 block text-ink text-xs">{new Date(mailbox.createdAt).toLocaleDateString()}</strong>
                     </div>
                   </div>
                 </div>
