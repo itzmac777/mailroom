@@ -29,6 +29,8 @@ export async function getPublicConfig(): Promise<PublicConfig> {
       defaultOutboundDailyLimit: 50,
       defaultAliasLimit: 5,
       aliasForwardLimit: 3,
+      forwardingRecipientLimit: 3,
+      forwardingVerifyTtlMinutes: 30,
       tempMailEnabled: false
     };
   }

@@ -7,6 +7,8 @@ export type PublicConfig = {
   defaultOutboundDailyLimit: number;
   defaultAliasLimit?: number;
   aliasForwardLimit?: number;
+  forwardingRecipientLimit?: number;
+  forwardingVerifyTtlMinutes?: number;
   tempMailEnabled: boolean;
 };
 
@@ -19,6 +21,16 @@ export type PublicMailAlias = {
   forwardTo: string[];
   createdAt: string;
   disabledAt?: string;
+};
+
+export type PublicForwardingRecipient = {
+  id: string;
+  email: string;
+  status: "pending" | "verified";
+  createdAt: string;
+  verifiedAt?: string;
+  disabledAt?: string;
+  codeExpiresAt?: string;
 };
 
 export type VerificationMatch = {
@@ -43,6 +55,8 @@ export type PublicMailbox = {
   outboundDailyLimit: number;
   aliasLimit?: number;
   aliases?: PublicMailAlias[];
+  forwardingEnabled?: boolean;
+  forwardTo?: PublicForwardingRecipient[];
   createdAt: string;
   inviteCode?: string;
   expiresAt?: string;

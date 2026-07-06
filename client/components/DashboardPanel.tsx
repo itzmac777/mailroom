@@ -426,9 +426,9 @@ export function DashboardPanel() {
             ))}
           </nav>
           <Link href="/dashboard/aliases" className="border border-line bg-white p-3 transition-colors hover:border-cta hover:bg-wash">
-            <span className="eyebrow m-0 block text-[9px]">Aliases</span>
+            <span className="eyebrow m-0 block text-[9px]">Routing</span>
             <span className="mt-2 flex items-center justify-between gap-3">
-              <strong className="text-sm text-ink">{activeAliasCount}/{aliasLimit}</strong>
+              <strong className="text-sm text-ink">{activeAliasCount}/{aliasLimit} aliases</strong>
               <span className="text-xs font-bold text-cta">Manage</span>
             </span>
           </Link>
