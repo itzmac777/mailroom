@@ -90,3 +90,30 @@ export type EmailMessage = {
   verification?: VerificationMatch;
   date: string;
 };
+
+export type TempInboxAccount = {
+  id: string;
+  email: string;
+  label?: string;
+  createdAt: string;
+  lastFetchedAt?: string;
+};
+
+export type TempInboxMessage = {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  date: string;
+  body: string;
+  otp: string;
+};
+
+export type TempInboxFetchResult = {
+  ok: boolean;
+  email: string;
+  folder: string;
+  total: number;
+  count: number;
+  messages: TempInboxMessage[];
+};

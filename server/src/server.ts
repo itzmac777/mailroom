@@ -111,11 +111,28 @@ type TempSessionRecord = {
   encPassword: string;
 };
 
+type TempInboxAccount = {
+  id: string;
+  email: string;
+  encPassword: string;
+  label?: string;
+  createdAt: string;
+  lastFetchedAt?: string;
+};
+
+type PublicTempInboxAccount = Omit<TempInboxAccount, "encPassword">;
+
+type TempInboxSessionRecord = {
+  createdAt: string;
+  accounts: TempInboxAccount[];
+};
+
 type Db = {
   invites: Record<string, Invite>;
   mailboxes: Record<string, Mailbox>;
   sessions: Record<string, SessionRecord>;
   tempSessions: Record<string, TempSessionRecord>;
+  tempInboxSessions: Record<string, TempInboxSessionRecord>;
   audit: AuditEntry[];
 };
 
@@ -216,6 +233,9 @@ const SMTP_PORT = Number(env.SMTP_PORT || 465);
 const SMTP_SECURE = String(env.SMTP_SECURE ?? "true").toLowerCase() !== "false";
 const CLIENT_ORIGIN = env.CLIENT_ORIGIN || "http://localhost:3000";
 const TEMP_SESSION_COOKIE = "mail_temp_session";
+const TEMP_INBOX_SESSION_COOKIE = "mail_temp_inbox_session";
+const TEMP_INBOX_SESSION_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
+const TEMP_INBOX_FETCH_ENDPOINT = env.TEMP_INBOX_FETCH_ENDPOINT || "https://chongzhi.art/api/mailbox/fetch";
 const TEMP_MAIL_ENABLED = String(env.TEMP_MAIL_ENABLED ?? "false").toLowerCase() === "true";
 const TEMP_QUOTA_MB = Number(env.TEMP_QUOTA_MB || 128);
 const TEMP_OUTBOUND_DAILY_LIMIT = 0;
@@ -638,6 +658,13 @@ function clearTempSessionCookie(res: ServerResponse, req?: IncomingMessage): voi
   appendSetCookie(res, `${TEMP_SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0${getCookieFlags(req)}`);
 }
 
+function setTempInboxSessionCookie(res: ServerResponse, token: string, req?: IncomingMessage): void {
+  appendSetCookie(
+    res,
+    `${TEMP_INBOX_SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=${TEMP_INBOX_SESSION_MAX_AGE_SECONDS}${getCookieFlags(req)}`
+  );
+}
+
 function mailboxIsExpired(mailbox: Mailbox): boolean {
   return Boolean(mailbox.expiresAt && new Date(mailbox.expiresAt).getTime() <= Date.now());
 }
@@ -660,6 +687,18 @@ async function getTempSession(req: IncomingMessage, db: Db): Promise<AuthSession
   const mailbox = db.mailboxes[session.email];
   if (!mailbox || mailbox.kind !== "temporary" || !mailboxIsUsable(mailbox)) return null;
   return { sessionId: token, mailbox, encPassword: session.encPassword };
+}
+
+function getOrCreateTempInboxSession(req: IncomingMessage, res: ServerResponse, db: Db): { token: string; session: TempInboxSessionRecord } {
+  const cookies = parseCookies(req);
+  let token = cookies[TEMP_INBOX_SESSION_COOKIE];
+  if (!token || !db.tempInboxSessions[token]) {
+    token = randomToken(32);
+    db.tempInboxSessions[token] = { createdAt: nowIso(), accounts: [] };
+  }
+  db.tempInboxSessions[token].accounts ||= [];
+  setTempInboxSessionCookie(res, token, req);
+  return { token, session: db.tempInboxSessions[token] };
 }
 
 function rateLimit(req: IncomingMessage, key: string, limit: number, windowMs: number): boolean {
@@ -685,6 +724,7 @@ async function ensureDb(): Promise<void> {
       mailboxes: {},
       sessions: {},
       tempSessions: {},
+      tempInboxSessions: {},
       audit: []
     };
     await fs.writeFile(DB_PATH, JSON.stringify(initial, null, 2));
@@ -699,7 +739,11 @@ async function readDb(): Promise<Db> {
   db.mailboxes ||= {};
   db.sessions ||= {};
   db.tempSessions ||= {};
+  db.tempInboxSessions ||= {};
   db.audit ||= [];
+  for (const session of Object.values(db.tempInboxSessions)) {
+    session.accounts ||= [];
+  }
   for (const mailbox of Object.values(db.mailboxes)) {
     mailbox.kind ||= mailbox.expiresAt ? "temporary" : "permanent";
     mailbox.quotaMb ||= mailbox.kind === "temporary" ? TEMP_QUOTA_MB : DEFAULT_QUOTA_MB;
@@ -808,6 +852,40 @@ function validateForwardingEmail(mailbox: Mailbox, value: unknown): { email: str
   const exists = (mailbox.forwardTo || []).some((recipient) => !recipient.disabledAt && recipient.email.toLowerCase() === email);
   if (exists) return { email: "", error: "That forwarding recipient already exists." };
   return { email };
+}
+
+function validateEmail(value: unknown): string {
+  const email = String(value || "").trim().toLowerCase();
+  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) ? email : "";
+}
+
+function publicTempInboxAccount(account: TempInboxAccount): PublicTempInboxAccount {
+  const { encPassword, ...publicFields } = account;
+  return publicFields;
+}
+
+function normalizeTempInboxMessage(value: any) {
+  return {
+    id: String(value?.id ?? value?.uid ?? value?.messageId ?? randomToken(8)),
+    from: String(value?.from || "Unknown Sender"),
+    to: String(value?.to || ""),
+    subject: String(value?.subject || "(No subject)"),
+    date: String(value?.date || nowIso()),
+    body: String(value?.body || value?.text || ""),
+    otp: String(value?.otp || "")
+  };
+}
+
+function normalizeTempInboxResponse(value: any, fallbackEmail: string, fallbackFolder: string) {
+  const messages = Array.isArray(value?.messages) ? value.messages.map(normalizeTempInboxMessage) : [];
+  return {
+    ok: Boolean(value?.ok ?? true),
+    email: String(value?.email || fallbackEmail),
+    folder: String(value?.folder || fallbackFolder),
+    total: Number(value?.total ?? messages.length),
+    count: Number(value?.count ?? messages.length),
+    messages
+  };
 }
 
 function parseForwardTo(value: unknown, ownerEmail: string): { forwardTo: string[]; error?: string } {
@@ -987,6 +1065,31 @@ async function syncMailuForwarding(mailbox: Mailbox): Promise<MailuCreateResult>
   const text = await response.text();
   if (!response.ok) throw new Error(`Mailu forwarding API failed with ${response.status}: ${text.slice(0, 300)}`);
   return { provider: "mailu", status: response.status, body: text ? safeJson(text) : null };
+}
+
+async function fetchExternalTempInbox(account: TempInboxAccount, folder: string, keyword: string, maxCount: number) {
+  const password = decrypt(account.encPassword);
+  const response = await fetch(TEMP_INBOX_FETCH_ENDPOINT, {
+    method: "POST",
+    signal: AbortSignal.timeout(20_000),
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify({
+      line: `${account.email}----${password}`,
+      folder,
+      keyword,
+      max_count: maxCount
+    })
+  });
+  const text = await response.text();
+  const payload = text ? safeJson(text) : {};
+  if (!response.ok) throw new Error(`Mailbox fetch failed with ${response.status}.`);
+  if (payload && typeof payload === "object" && "ok" in payload && !(payload as any).ok) {
+    throw new Error(String((payload as any).error || (payload as any).message || "Mailbox fetch failed."));
+  }
+  return normalizeTempInboxResponse(payload, account.email, folder);
 }
 
 async function deleteMailuAlias(alias: MailAlias): Promise<MailuCreateResult> {
@@ -1847,6 +1950,67 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return json(res, 200, { result });
     } catch (error) {
       return json(res, 502, { error: error instanceof Error ? error.message : "Failed to move email." });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/temp-inbox/accounts") {
+    const tempInbox = getOrCreateTempInboxSession(req, res, db);
+    await writeDb(db);
+    return json(res, 200, { accounts: tempInbox.session.accounts.map(publicTempInboxAccount) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/temp-inbox/accounts") {
+    if (!rateLimit(req, "temp-inbox-account", 20, 15 * 60 * 1000)) return json(res, 429, { error: "Too many account changes. Try again later." });
+    const body = await parseBody(req);
+    const email = validateEmail(body.email);
+    const password = String(body.password || "");
+    if (!email) return json(res, 400, { error: "Enter a valid email address." });
+    if (!password) return json(res, 400, { error: "Password is required." });
+    const label = String(body.label || "").trim().slice(0, 60);
+    const tempInbox = getOrCreateTempInboxSession(req, res, db);
+    const existing = tempInbox.session.accounts.find((account) => account.email.toLowerCase() === email);
+    if (existing) {
+      existing.encPassword = encrypt(password);
+      existing.label = label || existing.label;
+    } else {
+      tempInbox.session.accounts.unshift({
+        id: randomToken(10),
+        email,
+        encPassword: encrypt(password),
+        label: label || undefined,
+        createdAt: nowIso()
+      });
+    }
+    await writeDb(db);
+    return json(res, 201, { accounts: tempInbox.session.accounts.map(publicTempInboxAccount) });
+  }
+
+  const tempInboxAccountRoute = url.pathname.match(/^\/api\/temp-inbox\/accounts\/([^/]+)$/);
+  if (tempInboxAccountRoute && req.method === "DELETE") {
+    const tempInbox = getOrCreateTempInboxSession(req, res, db);
+    const id = decodeURIComponent(tempInboxAccountRoute[1]);
+    tempInbox.session.accounts = tempInbox.session.accounts.filter((account) => account.id !== id);
+    await writeDb(db);
+    return json(res, 200, { deleted: true, accounts: tempInbox.session.accounts.map(publicTempInboxAccount) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/temp-inbox/fetch") {
+    if (!rateLimit(req, "temp-inbox-fetch", 60, 15 * 60 * 1000)) return json(res, 429, { error: "Too many mailbox fetches. Try again later." });
+    const body = await parseBody(req);
+    const accountId = String(body.accountId || "").trim();
+    const folder = String(body.folder || "ALL").trim().slice(0, 40) || "ALL";
+    const keyword = String(body.keyword || "").trim().slice(0, 120);
+    const maxCount = Math.max(1, Math.min(50, Number(body.maxCount || 10) || 10));
+    const tempInbox = getOrCreateTempInboxSession(req, res, db);
+    const account = tempInbox.session.accounts.find((item) => item.id === accountId);
+    if (!account) return json(res, 404, { error: "Mailbox account not found." });
+    try {
+      const result = await fetchExternalTempInbox(account, folder, keyword, maxCount);
+      account.lastFetchedAt = nowIso();
+      await writeDb(db);
+      return json(res, 200, result);
+    } catch (error) {
+      return json(res, 502, { error: error instanceof Error ? error.message : "Mailbox fetch failed." });
     }
   }
 
