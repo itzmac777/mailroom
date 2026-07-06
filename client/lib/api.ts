@@ -27,6 +27,8 @@ export async function getPublicConfig(): Promise<PublicConfig> {
       dryRun: true,
       defaultQuotaMb: 1024,
       defaultOutboundDailyLimit: 50,
+      defaultAliasLimit: 5,
+      aliasForwardLimit: 3,
       tempMailEnabled: false
     };
   }

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import type { PublicMailbox, EmailMessage } from "@/lib/types";
+import type { PublicMailbox, EmailMessage, PublicMailAlias, VerificationMatch } from "@/lib/types";
 
 type MailFolder = "inbox" | "sent" | "spam" | "trash";
 
@@ -100,6 +100,8 @@ type EmailBodyDetails = {
   html?: string;
   replyTo?: string;
   to?: string;
+  deliveredToAlias?: PublicMailAlias;
+  verification?: VerificationMatch;
 };
 
 export function DashboardPanel() {
@@ -125,13 +127,23 @@ export function DashboardPanel() {
   const [composeSubject, setComposeSubject] = useState("");
   const [composeBody, setComposeBody] = useState("");
   const [composeMessage, setComposeMessage] = useState("");
+  const [composeFromAliasId, setComposeFromAliasId] = useState("");
   const [sending, setSending] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [aliases, setAliases] = useState<PublicMailAlias[]>([]);
+  const [aliasLimit, setAliasLimit] = useState(5);
+  const [forwardLimit, setForwardLimit] = useState(3);
+  const [aliasMessage, setAliasMessage] = useState("");
+  const [aliasBusy, setAliasBusy] = useState(false);
+  const [verificationMatches, setVerificationMatches] = useState<VerificationMatch[]>([]);
+  const [verificationLoading, setVerificationLoading] = useState(false);
 
   const fetchMailboxAndEmails = async () => {
     try {
       const result = await api<{ mailbox: PublicMailbox }>("/api/me/mailbox");
       setMailbox(result.mailbox);
+      setAliases(result.mailbox.aliases || []);
+      setAliasLimit(result.mailbox.aliasLimit || 5);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Not signed in.");
@@ -163,6 +175,7 @@ export function DashboardPanel() {
   useEffect(() => {
     if (mailbox) {
       fetchEmailsList();
+      if (activeFolder === "inbox") fetchVerificationCodes().catch(() => undefined);
     }
   }, [mailbox, activeFolder]);
 
@@ -206,6 +219,9 @@ export function DashboardPanel() {
   }, [filteredEmails, selectedEmailUid]);
 
   const selectedEmailBody = selectedEmail ? emailBodies[selectedEmail.uid] : null;
+  const selectedDeliveredAlias = selectedEmailBody?.deliveredToAlias ?? selectedEmail?.deliveredToAlias;
+  const composeAlias = aliases.find((alias) => alias.id === composeFromAliasId);
+  const activeAliasCount = aliases.filter((alias) => alias.status === "active").length;
 
   const mailboxInitial = mailbox?.displayName?.[0] ?? mailbox?.local?.[0] ?? "M";
   const activeFolders = folders.map((folder) => folder.id === "inbox" ? { ...folder, count: unreadCount } : folder);
@@ -213,12 +229,99 @@ export function DashboardPanel() {
 
   async function copyMailboxAddress() {
     if (!mailbox) return;
+    await copyText(mailbox.email);
+  }
+
+  async function copyText(value: string) {
     try {
-      await navigator.clipboard.writeText(mailbox.email);
+      await navigator.clipboard.writeText(value);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
       setCopied(false);
+    }
+  }
+
+  function openCompose() {
+    setComposeTo("");
+    setComposeSubject("");
+    setComposeBody("");
+    setComposeFromAliasId("");
+    setComposeMessage("");
+    setComposeOpen(true);
+  }
+
+  async function fetchAliases() {
+    const result = await api<{ aliases: PublicMailAlias[]; limit: number; forwardLimit: number }>("/api/me/aliases");
+    setAliases(result.aliases);
+    setAliasLimit(result.limit);
+    setForwardLimit(result.forwardLimit);
+  }
+
+  async function fetchVerificationCodes() {
+    setVerificationLoading(true);
+    try {
+      const result = await api<{ matches: VerificationMatch[] }>("/api/me/verification-codes?limit=10");
+      setVerificationMatches(result.matches);
+    } catch {
+      setVerificationMatches([]);
+    } finally {
+      setVerificationLoading(false);
+    }
+  }
+
+  async function submitAlias(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setAliasBusy(true);
+    setAliasMessage("Creating alias...");
+    try {
+      const result = await api<{ aliases: PublicMailAlias[] }>("/api/me/aliases", {
+        method: "POST",
+        body: JSON.stringify({
+          local: form.get("local"),
+          label: form.get("label"),
+          forwardTo: String(form.get("forwardTo") || "").split(/[;,\n]/).map((item) => item.trim()).filter(Boolean)
+        })
+      });
+      setAliases(result.aliases);
+      setAliasMessage("Alias created.");
+      event.currentTarget.reset();
+    } catch (error) {
+      setAliasMessage(error instanceof Error ? error.message : "Alias change failed.");
+    } finally {
+      setAliasBusy(false);
+    }
+  }
+
+  async function patchAlias(alias: PublicMailAlias, patch: Record<string, unknown>) {
+    setAliasBusy(true);
+    setAliasMessage("Updating alias...");
+    try {
+      const result = await api<{ aliases: PublicMailAlias[] }>(`/api/me/aliases/${encodeURIComponent(alias.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch)
+      });
+      setAliases(result.aliases);
+      setAliasMessage("Alias updated.");
+    } catch (error) {
+      setAliasMessage(error instanceof Error ? error.message : "Alias update failed.");
+    } finally {
+      setAliasBusy(false);
+    }
+  }
+
+  async function deleteAlias(alias: PublicMailAlias) {
+    setAliasBusy(true);
+    setAliasMessage("Deleting alias...");
+    try {
+      const result = await api<{ aliases: PublicMailAlias[] }>(`/api/me/aliases/${encodeURIComponent(alias.id)}`, { method: "DELETE" });
+      setAliases(result.aliases);
+      setAliasMessage("Alias deleted.");
+    } catch (error) {
+      setAliasMessage(error instanceof Error ? error.message : "Alias delete failed.");
+    } finally {
+      setAliasBusy(false);
     }
   }
 
@@ -227,6 +330,7 @@ export function DashboardPanel() {
     setComposeTo(senderAddress(selectedEmail.from));
     setComposeSubject(selectedEmail.subject?.toLowerCase().startsWith("re:") ? selectedEmail.subject : `Re: ${selectedEmail.subject || "(No subject)"}`);
     setComposeBody(`\n\nOn ${formatFullDate(selectedEmail.date)}, ${senderName(selectedEmail.from)} wrote:`);
+    setComposeFromAliasId(selectedDeliveredAlias?.id || "");
     setComposeMessage("");
     setComposeOpen(true);
   }
@@ -238,7 +342,7 @@ export function DashboardPanel() {
     try {
       await api<{ result: unknown }>("/api/me/send", {
         method: "POST",
-        body: JSON.stringify({ to: composeTo, subject: composeSubject, body: composeBody, replyToUid: selectedEmail?.uid })
+        body: JSON.stringify({ to: composeTo, subject: composeSubject, body: composeBody, replyToUid: selectedEmail?.uid, replyFolder: activeFolder, fromAliasId: composeFromAliasId || undefined })
       });
       setComposeMessage("Sent.");
       setComposeOpen(false);
@@ -358,7 +462,7 @@ export function DashboardPanel() {
         </div>
 
         <div className="grid content-start gap-5 p-5">
-          <button className="button button-primary min-h-[44px] w-full px-4" type="button" onClick={() => setComposeOpen(true)}>Compose</button>
+          <button className="button button-primary min-h-[44px] w-full px-4" type="button" onClick={openCompose}>Compose</button>
           <nav className="grid gap-1" aria-label="Mailbox folders">
             {activeFolders.map((folder) => (
               <button
@@ -372,7 +476,45 @@ export function DashboardPanel() {
               </button>
             ))}
           </nav>
-        </div>
+          <div className="border border-line bg-white p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div><p className="eyebrow m-0 text-[9px]">Aliases</p><strong className="text-sm text-ink">{activeAliasCount}/{aliasLimit}</strong></div>
+              <button className="text-xs font-bold text-cta" type="button" onClick={() => fetchAliases().catch((error) => setAliasMessage(error.message))}>Refresh</button>
+            </div>
+            <form className="mt-3 grid gap-2" onSubmit={submitAlias}>
+              <input className="min-h-9 border border-line bg-[#fbfaf7] px-2 text-xs outline-none focus:border-cta" name="local" placeholder="alias" required />
+              <input className="min-h-9 border border-line bg-[#fbfaf7] px-2 text-xs outline-none focus:border-cta" name="label" placeholder="Label" />
+              <textarea className="min-h-16 border border-line bg-[#fbfaf7] px-2 py-2 text-xs outline-none focus:border-cta" name="forwardTo" placeholder={`Forward to, max ${forwardLimit}`} />
+              <button className="button button-secondary min-h-[36px] px-3 text-xs" type="submit" disabled={aliasBusy || activeAliasCount >= aliasLimit}>Create alias</button>
+            </form>
+            <div className="mt-3 grid gap-2">
+              {aliases.length ? aliases.map((alias) => (
+                <div key={alias.id} className="border-t border-line pt-2 text-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <button type="button" className="min-w-0 text-left font-bold text-ink hover:text-cta" onClick={() => copyText(alias.email)}>{alias.email}</button>
+                    <span className={alias.status === "active" ? "text-cta" : "text-muted"}>{alias.status}</span>
+                  </div>
+                  <form className="mt-2 grid gap-2" onSubmit={(event) => {
+                    event.preventDefault();
+                    const form = new FormData(event.currentTarget);
+                    patchAlias(alias, {
+                      label: form.get("label"),
+                      forwardTo: String(form.get("forwardTo") || "").split(/[;,\n]/).map((item) => item.trim()).filter(Boolean)
+                    });
+                  }}>
+                    <input className="min-h-8 border border-line bg-[#fbfaf7] px-2 text-xs outline-none focus:border-cta" name="label" defaultValue={alias.label || ""} placeholder="Label" />
+                    <textarea className="min-h-14 border border-line bg-[#fbfaf7] px-2 py-2 text-xs outline-none focus:border-cta" name="forwardTo" defaultValue={alias.forwardTo.join(", ")} placeholder="Forward recipients" />
+                    <button className="text-left text-[11px] font-bold text-cta" type="submit" disabled={aliasBusy}>Save routing</button>
+                  </form>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button className="text-[11px] font-bold text-cta" type="button" disabled={aliasBusy} onClick={() => patchAlias(alias, { disabled: alias.status === "active" })}>{alias.status === "active" ? "Disable" : "Enable"}</button>
+                    <button className="text-[11px] font-bold text-red-600" type="button" disabled={aliasBusy} onClick={() => deleteAlias(alias)}>Delete</button>
+                  </div>
+                </div>
+              )) : <p className="border-t border-line pt-3 text-xs leading-5 text-muted">No aliases yet.</p>}
+            </div>
+            <p className="mt-3 min-h-4 text-xs font-bold text-muted">{aliasMessage}</p>
+          </div>        </div>
 
         <div className="mt-auto border-t border-line p-5">
           <div className="mb-3 flex items-center justify-between text-xs font-bold text-muted">
@@ -487,7 +629,24 @@ export function DashboardPanel() {
           </header>
 
           <div className="min-h-0 overflow-y-auto bg-white">
-            {emailsLoading ? (
+                        {activeFolder === "inbox" ? (
+              <div className="border-b border-line bg-[#fbfaf7] p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div><p className="eyebrow m-0 text-[9px]">Verification tray</p><strong className="text-sm text-ink">Codes and login links</strong></div>
+                  <button className="text-xs font-bold text-cta" type="button" onClick={() => fetchVerificationCodes().catch(() => undefined)}>{verificationLoading ? "Scanning..." : "Scan"}</button>
+                </div>
+                {verificationMatches.length ? (
+                  <div className="grid gap-2">
+                    {verificationMatches.slice(0, 3).map((match) => (
+                      <button key={`${match.uid}-${match.code || match.loginUrl}`} type="button" onClick={() => match.code ? copyText(match.code) : match.loginUrl ? copyText(match.loginUrl) : undefined} className="grid grid-cols-[1fr_auto] gap-3 border border-line bg-white p-3 text-left text-xs hover:border-cta">
+                        <span className="min-w-0"><strong className="block truncate text-ink">{match.serviceHint || senderName(match.from)}</strong><span className="mt-1 block truncate text-muted">{match.subject}</span></span>
+                        <span className="font-extrabold text-cta">{match.code || "Link"}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : <p className="text-xs leading-5 text-muted">{verificationLoading ? "Scanning recent inbox messages..." : "No recent verification codes found."}</p>}
+              </div>
+            ) : null}{emailsLoading ? (
               <div className="grid gap-px bg-line p-px">
                 {[1, 2, 3, 4, 5].map((item) => (
                   <div key={item} className="grid gap-3 bg-white p-5">
@@ -539,6 +698,10 @@ export function DashboardPanel() {
                         <span className="mt-1 block truncate text-xs text-muted">
                           {senderName(email.from)} &lt;{senderAddress(email.from)}&gt;
                         </span>
+                        <span className="mt-2 flex flex-wrap gap-2">
+                          {email.deliveredToAlias ? <span className="border border-cta/30 bg-wash px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-cta">to {email.deliveredToAlias.local}</span> : null}
+                          {email.verification ? <span className="border border-line bg-[#fbfaf7] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-muted">code</span> : null}
+                        </span>
                       </span>
                       <span className="whitespace-nowrap text-xs font-semibold text-muted/80">{formatMessageDate(email.date)}</span>
                     </button>
@@ -566,7 +729,7 @@ export function DashboardPanel() {
               </button>
               <div className="min-w-0">
                 <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-cta max-md:text-[9px]">Message preview</p>
-                <p className="mt-1 truncate text-sm max-md:text-xs font-medium text-muted">{selectedEmail ? senderAddress(selectedEmail.from) : mailbox.email}</p>
+                <p className="mt-1 truncate text-sm max-md:text-xs font-medium text-muted">{selectedDeliveredAlias ? `to ${selectedDeliveredAlias.email}` : selectedEmail ? senderAddress(selectedEmail.from) : mailbox.email}</p>
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -615,6 +778,8 @@ export function DashboardPanel() {
                         <strong className="font-semibold text-ink">{senderName(selectedEmail.from)}</strong>{" "}
                         <span className="text-muted/80 text-xs max-md:text-[10px] font-medium">&lt;{senderAddress(selectedEmail.from)}&gt;</span>
                       </div>
+                      {selectedDeliveredAlias ? <p className="mt-1 inline-flex border border-cta/30 bg-wash px-2 py-1 text-[11px] font-bold text-cta">Delivered to {selectedDeliveredAlias.email}</p> : null}
+                      {selectedEmailBody?.verification ? <button type="button" onClick={() => selectedEmailBody.verification?.code ? copyText(selectedEmailBody.verification.code) : selectedEmailBody.verification?.loginUrl ? copyText(selectedEmailBody.verification.loginUrl) : undefined} className="mt-2 block border border-line bg-[#fbfaf7] px-3 py-2 text-left text-xs font-bold text-ink hover:border-cta">{selectedEmailBody.verification.code ? `Code: ${selectedEmailBody.verification.code}` : "Copy login link"}</button> : null}
                       <div className="relative mt-0.5">
                         <button
                           type="button"
@@ -734,6 +899,7 @@ export function DashboardPanel() {
               </div>
               <button type="button" className="grid h-10 w-10 place-items-center border border-line text-ink hover:text-cta" onClick={() => setComposeOpen(false)} aria-label="Close compose">x</button>
             </div>
+            {composeAlias ? <div className="border border-cta/30 bg-wash p-3 text-sm font-bold text-cta">Replying from {composeAlias.email}</div> : null}
             <label className="label">To<input className="field" value={composeTo} onChange={(event) => setComposeTo(event.target.value)} placeholder="friend@example.com" required /></label>
             <label className="label">Subject<input className="field" value={composeSubject} onChange={(event) => setComposeSubject(event.target.value)} placeholder="Subject" required /></label>
             <label className="label">Message<textarea className="min-h-48 w-full border border-line bg-white p-3 text-ink focus:outline-2 focus:outline-cta" value={composeBody} onChange={(event) => setComposeBody(event.target.value)} required /></label>

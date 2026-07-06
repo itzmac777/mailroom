@@ -22,6 +22,31 @@ type Invite = {
   claimedBy?: string[];
 };
 
+type MailAlias = {
+  id: string;
+  local: string;
+  email: string;
+  label?: string;
+  status: "active" | "disabled";
+  forwardTo: string[];
+  createdAt: string;
+  disabledAt?: string;
+  providerResult?: MailuCreateResult;
+};
+
+type PublicMailAlias = Omit<MailAlias, "providerResult">;
+
+type VerificationMatch = {
+  uid: string;
+  subject: string;
+  from: string;
+  code?: string;
+  loginUrl?: string;
+  serviceHint?: string;
+  date: string;
+  confidence: number;
+};
+
 type Mailbox = {
   id: string;
   local: string;
@@ -39,10 +64,12 @@ type Mailbox = {
   disabledAt?: string;
   deletedAt?: string;
   webmailUrl: string;
+  aliases?: MailAlias[];
+  aliasLimit?: number;
   providerResult: MailuCreateResult;
 };
 
-type PublicMailbox = Omit<Mailbox, "passwordHash" | "providerResult">;
+type PublicMailbox = Omit<Mailbox, "passwordHash" | "providerResult" | "aliases"> & { aliases?: PublicMailAlias[] };
 
 type SessionRecord = {
   email: string;
@@ -158,8 +185,11 @@ const WEBMAIL_URL = env.WEBMAIL_URL || `https://${MAIL_HOSTNAME}/webmail/`;
 const ADMIN_TOKEN = env.ADMIN_TOKEN || "change-me";
 const DEFAULT_QUOTA_MB = Number(env.DEFAULT_QUOTA_MB || 1024);
 const DEFAULT_OUTBOUND_DAILY_LIMIT = Number(env.DEFAULT_OUTBOUND_DAILY_LIMIT || 50);
+const DEFAULT_ALIAS_LIMIT = Number(env.DEFAULT_ALIAS_LIMIT || 5);
+const ALIAS_FORWARD_LIMIT = Number(env.ALIAS_FORWARD_LIMIT || 3);
 const MAILU_DRY_RUN = String(env.MAILU_DRY_RUN ?? "true").toLowerCase() !== "false";
 const MAILU_DELETE_USER_ENDPOINT = env.MAILU_DELETE_USER_ENDPOINT || "/api/v1/user";
+const MAILU_ALIAS_ENDPOINT = env.MAILU_ALIAS_ENDPOINT || "/api/v1/alias";
 const SMTP_HOST = env.SMTP_HOST || MAIL_HOSTNAME;
 const SMTP_PORT = Number(env.SMTP_PORT || 465);
 const SMTP_SECURE = String(env.SMTP_SECURE ?? "true").toLowerCase() !== "false";
@@ -296,9 +326,19 @@ function mockEmailsForFolder(folder: MailFolder) {
   return MOCK_EMAILS;
 }
 
-async function fetchEmails(email: string, pass: string, folder: MailFolder = "inbox") {
+function formatAddressList(list?: Array<{ name?: string; address?: string }>): string {
+  return (list || [])
+    .map((item) => item.address ? `${item.name || ""} <${item.address}>`.trim() : "")
+    .filter(Boolean)
+    .join(", ");
+}
+
+async function fetchEmails(email: string, pass: string, folder: MailFolder = "inbox", aliases: MailAlias[] = []) {
   if (MAILU_DRY_RUN) {
-    return mockEmailsForFolder(folder);
+    return mockEmailsForFolder(folder).map((message, index) => {
+      const to = index === 0 && aliases[0] ? aliases[0].email : email;
+      return { ...message, to, deliveredToAlias: detectDeliveredAlias(to, aliases) };
+    });
   }
   
   const client = new ImapFlow({
@@ -325,6 +365,7 @@ async function fetchEmails(email: string, pass: string, folder: MailFolder = "in
     if (count > 0) {
       const range = `${Math.max(1, count - 19)}:${count}`;
       for await (const msg of client.fetch({ seq: range }, { envelope: true })) {
+        const to = formatAddressList(msg.envelope.to as Array<{ name?: string; address?: string }> | undefined) || email;
         emails.push({
           uid: msg.uid.toString(),
           seq: msg.seq,
@@ -332,6 +373,8 @@ async function fetchEmails(email: string, pass: string, folder: MailFolder = "in
           from: msg.envelope.from?.[0] 
             ? `${msg.envelope.from[0].name || ""} <${msg.envelope.from[0].address || ""}>`.trim() 
             : "Unknown Sender",
+          to,
+          deliveredToAlias: detectDeliveredAlias(to, aliases),
           date: msg.envelope.date ? msg.envelope.date.toISOString() : new Date().toISOString()
         });
       }
@@ -344,20 +387,29 @@ async function fetchEmails(email: string, pass: string, folder: MailFolder = "in
   return emails;
 }
 
-async function fetchEmailBody(email: string, pass: string, uid: string, folder: MailFolder = "inbox") {
+async function fetchEmailBody(email: string, pass: string, uid: string, folder: MailFolder = "inbox", aliases: MailAlias[] = []) {
   if (MAILU_DRY_RUN) {
     const mock = mockEmailsForFolder(folder).find((m) => m.uid === uid);
-    return {
-      uid,
-      body: `Hi there,
+    const to = aliases[0]?.email || email;
+    const body = uid === "1"
+      ? "Your verification code is 482913. Use it to finish signing in."
+      : `Hi there,
 
 This is a mock message body for testing. We are running in dry-run mode, so the server is simulating a live IMAP connection.
 
 Best regards,
-The Mailroom Team`,
-      html: `<p>Hi there,</p><p><br></p><p>This is a mock message body for testing. We are running in dry-run mode, so the server is simulating a live IMAP connection.</p><p><br></p><p>Best regards,<br>The Mailroom Team</p>`,
+The Mailroom Team`;
+    const html = uid === "1"
+      ? "<p>Your verification code is <strong>482913</strong>. Use it to finish signing in.</p>"
+      : `<p>Hi there,</p><p><br></p><p>This is a mock message body for testing. We are running in dry-run mode, so the server is simulating a live IMAP connection.</p><p><br></p><p>Best regards,<br>The Mailroom Team</p>`;
+    return {
+      uid,
+      body,
+      html,
       replyTo: mock?.from || "",
-      to: email
+      to,
+      deliveredToAlias: detectDeliveredAlias(to, aliases),
+      verification: extractVerification({ uid, subject: mock?.subject || "", from: mock?.from || "", date: mock?.date || nowIso(), body, html })
     };
   }
 
@@ -383,12 +435,17 @@ The Mailroom Team`,
       throw new Error("Message source not found");
     }
     const parsed = await simpleParser(msg.source);
+    const body = parsed.text || "";
+    const html = parsed.html || parsed.textAsHtml || "";
+    const to = parsed.to?.text || email;
     return {
       uid,
-      body: parsed.text || "",
-      html: parsed.html || parsed.textAsHtml || "",
+      body,
+      html,
       replyTo: parsed.replyTo?.text || parsed.from?.text || "",
-      to: parsed.to?.text || email
+      to,
+      deliveredToAlias: detectDeliveredAlias(to, aliases),
+      verification: extractVerification({ uid, subject: parsed.subject || "", from: parsed.from?.text || "", date: parsed.date?.toISOString() || nowIso(), body, html })
     };
   } finally {
     lock.release();
@@ -472,22 +529,22 @@ function windowlessTimeout(callback: () => void, ms: number) {
   return setTimeout(callback, ms);
 }
 
-async function sendPlainEmail(from: string, pass: string, recipients: string[], subject: string, body: string) {
-  if (MAILU_DRY_RUN) return { sent: true, dryRun: true };
+async function sendPlainEmail(authEmail: string, pass: string, recipients: string[], subject: string, body: string, fromAddress = authEmail) {
+  if (MAILU_DRY_RUN) return { sent: true, dryRun: true, from: fromAddress };
   const socket = tls.connect({ host: SMTP_HOST, port: SMTP_PORT, servername: SMTP_HOST, rejectUnauthorized: SMTP_SECURE });
   try {
     await smtpCommand(socket, "", [220]);
     await smtpCommand(socket, `EHLO ${MAIL_DOMAIN}`, [250]);
     await smtpCommand(socket, "AUTH LOGIN", [334]);
-    await smtpCommand(socket, Buffer.from(from).toString("base64"), [334]);
+    await smtpCommand(socket, Buffer.from(authEmail).toString("base64"), [334]);
     await smtpCommand(socket, Buffer.from(pass).toString("base64"), [235]);
-    await smtpCommand(socket, `MAIL FROM:<${from}>`, [250]);
+    await smtpCommand(socket, `MAIL FROM:<${fromAddress}>`, [250]);
     for (const recipient of recipients) {
       await smtpCommand(socket, `RCPT TO:<${recipient}>`, [250, 251]);
     }
     await smtpCommand(socket, "DATA", [354]);
     const raw = [
-      `From: ${cleanHeader(from)}`,
+      `From: ${cleanHeader(fromAddress)}`,
       `To: ${recipients.map(cleanHeader).join(", ")}`,
       `Subject: ${encodeSubject(subject)}`,
       `Date: ${new Date().toUTCString()}`,
@@ -627,6 +684,12 @@ async function readDb(): Promise<Db> {
     mailbox.quotaMb ||= mailbox.kind === "temporary" ? TEMP_QUOTA_MB : DEFAULT_QUOTA_MB;
     mailbox.outboundDailyLimit ??= mailbox.kind === "temporary" ? TEMP_OUTBOUND_DAILY_LIMIT : DEFAULT_OUTBOUND_DAILY_LIMIT;
     mailbox.webmailUrl ||= WEBMAIL_URL;
+    mailbox.aliasLimit ||= DEFAULT_ALIAS_LIMIT;
+    mailbox.aliases ||= [];
+    for (const alias of mailbox.aliases) {
+      alias.forwardTo ||= [];
+      alias.status ||= alias.disabledAt ? "disabled" : "active";
+    }
   }
   return db;
 }
@@ -683,6 +746,134 @@ function validateLocal(local: string): string | null {
   if (value.includes("..")) return "Repeated dots are not allowed.";
   if (RESERVED.has(value)) return "That address is reserved.";
   return null;
+}
+function activeAliases(mailbox: Mailbox): MailAlias[] {
+  return (mailbox.aliases || []).filter((alias) => alias.status === "active" && !alias.disabledAt);
+}
+
+function publicAlias(alias: MailAlias): PublicMailAlias {
+  const { providerResult, ...publicFields } = alias;
+  return publicFields;
+}
+
+function parseForwardTo(value: unknown, ownerEmail: string): { forwardTo: string[]; error?: string } {
+  const raw = Array.isArray(value) ? value.join(",") : String(value || "");
+  const items = raw.split(/[;,\n]/).map((item) => item.trim().toLowerCase()).filter(Boolean);
+  const forwardTo = Array.from(new Set(items));
+  const invalid = forwardTo.find((item) => !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(item));
+  if (invalid) return { forwardTo: [], error: `Invalid forwarding address: ${invalid}` };
+  if (forwardTo.includes(ownerEmail.toLowerCase())) return { forwardTo: [], error: "Forwarding to the primary mailbox is already included." };
+  if (forwardTo.length > ALIAS_FORWARD_LIMIT) return { forwardTo: [], error: `Use ${ALIAS_FORWARD_LIMIT} forwarding recipients or fewer.` };
+  return { forwardTo };
+}
+
+function aliasEmailExists(db: Db, email: string, currentMailbox?: Mailbox, currentAliasId?: string): boolean {
+  const target = email.toLowerCase();
+  if (db.mailboxes[target]) return true;
+  return Object.values(db.mailboxes).some((mailbox) => (mailbox.aliases || []).some((alias) => {
+    if (currentMailbox?.email === mailbox.email && currentAliasId && alias.id === currentAliasId) return false;
+    return alias.email.toLowerCase() === target;
+  }));
+}
+
+function getAlias(mailbox: Mailbox, id: string): MailAlias | undefined {
+  return (mailbox.aliases || []).find((alias) => alias.id === id);
+}
+
+function aliasDestinations(mailbox: Mailbox, alias: MailAlias): string[] {
+  return Array.from(new Set([mailbox.email.toLowerCase(), ...(alias.forwardTo || []).map((item) => item.toLowerCase())]));
+}
+
+function detectDeliveredAlias(to: string | undefined, aliases: MailAlias[] = []): PublicMailAlias | undefined {
+  const value = String(to || "").toLowerCase();
+  const alias = aliases.find((item) => item.status === "active" && value.includes(item.email.toLowerCase()));
+  return alias ? publicAlias(alias) : undefined;
+}
+
+function stripHtml(html: string): string {
+  return String(html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function serviceHintFrom(from: string, subject: string): string | undefined {
+  const email = String(from || "").match(/<([^>]+)>/)?.[1] || from;
+  const domain = String(email || "").split("@").pop()?.replace(/^mail\.|^no-reply\.|^noreply\./, "");
+  if (domain) return domain.split(".")[0]?.replace(/[-_]/g, " ");
+  return String(subject || "").split(/\s+/).slice(0, 2).join(" ") || undefined;
+}
+
+function extractVerification(input: { uid: string; subject: string; from: string; date: string; body?: string; html?: string }): VerificationMatch | undefined {
+  const text = `${input.subject}\n${input.body || ""}\n${stripHtml(input.html || "")}`.replace(/\s+/g, " ").trim();
+  if (!text) return undefined;
+  const codePatterns = [
+    /(?:code|otp|verification|verify|login|security)[^0-9]{0,24}([0-9]{4,8})(?![0-9])/i,
+    /\b([0-9]{6})\b/
+  ];
+  const code = codePatterns.map((pattern) => text.match(pattern)?.[1]).find(Boolean);
+  const loginUrl = text.match(/https?:\/\/[^\s"'<>]+/i)?.[0]?.replace(/[).,]+$/, "");
+  const subjectLooksRelevant = /(code|otp|verification|verify|login|security|sign in|signin)/i.test(input.subject || text);
+  if (!code && !loginUrl) return undefined;
+  if (code && !subjectLooksRelevant && !/(code|otp|verification|login)/i.test(text.slice(0, 500))) return undefined;
+  return {
+    uid: input.uid,
+    subject: input.subject || "(No subject)",
+    from: input.from || "Unknown Sender",
+    code,
+    loginUrl,
+    serviceHint: serviceHintFrom(input.from, input.subject),
+    date: input.date,
+    confidence: code && subjectLooksRelevant ? 0.94 : code ? 0.82 : 0.68
+  };
+}
+
+async function upsertMailuAlias(mailbox: Mailbox, alias: MailAlias, enabled = true): Promise<MailuCreateResult> {
+  if (MAILU_DRY_RUN) return { provider: "dry-run", message: "MAILU_DRY_RUN is enabled; no Mailu alias call was made." };
+  const base = env.MAILU_API_BASE;
+  const token = env.MAILU_API_TOKEN;
+  if (!base || !token) throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
+  const response = await fetch(new URL(MAILU_ALIAS_ENDPOINT, base).toString(), {
+    method: "POST",
+    signal: AbortSignal.timeout(15_000),
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+      "x-api-key": token
+    },
+    body: JSON.stringify({
+      localpart: alias.local,
+      domain: MAIL_DOMAIN,
+      email: alias.email,
+      destination: aliasDestinations(mailbox, alias).join(","),
+      destinations: aliasDestinations(mailbox, alias),
+      enabled,
+      comment: "Created by Mailroom alias controls"
+    })
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Mailu alias API failed with ${response.status}: ${text.slice(0, 300)}`);
+  return { provider: "mailu", status: response.status, body: text ? safeJson(text) : null };
+}
+
+async function deleteMailuAlias(alias: MailAlias): Promise<MailuCreateResult> {
+  if (MAILU_DRY_RUN) return { provider: "dry-run", message: "MAILU_DRY_RUN is enabled; no Mailu alias delete call was made." };
+  const base = env.MAILU_API_BASE;
+  const token = env.MAILU_API_TOKEN;
+  if (!base || !token) throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
+  const endpoint = MAILU_ALIAS_ENDPOINT.endsWith("/") ? `${MAILU_ALIAS_ENDPOINT}${encodeURIComponent(alias.email)}` : `${MAILU_ALIAS_ENDPOINT}/${encodeURIComponent(alias.email)}`;
+  const response = await fetch(new URL(endpoint, base).toString(), {
+    method: "DELETE",
+    signal: AbortSignal.timeout(15_000),
+    headers: { authorization: `Bearer ${token}`, "x-api-key": token }
+  });
+  const text = await response.text();
+  if (!response.ok && response.status !== 404) throw new Error(`Mailu alias delete failed with ${response.status}: ${text.slice(0, 300)}`);
+  return { provider: "mailu", status: response.status, body: text ? safeJson(text) : null };
 }
 
 function strongPassword(password: unknown): string | null {
@@ -1074,8 +1265,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return json(res, 200, {
       local,
       email,
-      available: !error && !db.mailboxes[email],
-      reason: error || (db.mailboxes[email] ? "That mailbox already exists." : null)
+      available: !error && !aliasEmailExists(db, email),
+      reason: error || (aliasEmailExists(db, email) ? "That address already exists." : null)
     });
   }
 
@@ -1107,7 +1298,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (localError) return json(res, 400, { error: localError });
     if (passwordError) return json(res, 400, { error: passwordError });
     if (!displayName) return json(res, 400, { error: "Display name is required." });
-    if (db.mailboxes[email]) return json(res, 409, { error: "That mailbox already exists." });
+    if (aliasEmailExists(db, email)) return json(res, 409, { error: "That address already exists." });
 
     const invite = db.invites[code];
     if (!inviteIsUsable(invite)) return json(res, 400, { error: "Invite is invalid, expired, revoked, or fully used." });
@@ -1184,6 +1375,115 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (!session) return json(res, 401, { error: "Not signed in." });
     return json(res, 200, { mailbox: publicMailbox(session.mailbox) });
   }
+  if (req.method === "GET" && url.pathname === "/api/me/aliases") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    return json(res, 200, {
+      aliases: (session.mailbox.aliases || []).map(publicAlias),
+      limit: session.mailbox.aliasLimit || DEFAULT_ALIAS_LIMIT,
+      forwardLimit: ALIAS_FORWARD_LIMIT
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/me/aliases") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    if (!rateLimit(req, "alias-create", 15, 15 * 60 * 1000)) return json(res, 429, { error: "Too many alias changes. Try again later." });
+    const body = await parseBody(req);
+    const local = normalizeLocal(body.local);
+    const email = `${local}@${MAIL_DOMAIN}`;
+    const localError = validateLocal(local);
+    const parsedForwards = parseForwardTo(body.forwardTo, session.mailbox.email);
+    if (localError) return json(res, 400, { error: localError });
+    if (parsedForwards.error) return json(res, 400, { error: parsedForwards.error });
+    if (aliasEmailExists(db, email)) return json(res, 409, { error: "That address already exists." });
+    if (activeAliases(session.mailbox).length >= (session.mailbox.aliasLimit || DEFAULT_ALIAS_LIMIT)) return json(res, 400, { error: "Alias limit reached." });
+    const alias: MailAlias = {
+      id: randomToken(10),
+      local,
+      email,
+      label: String(body.label || "").trim().slice(0, 60),
+      status: "active",
+      forwardTo: parsedForwards.forwardTo,
+      createdAt: nowIso()
+    };
+    try {
+      alias.providerResult = await upsertMailuAlias(session.mailbox, alias, true);
+      session.mailbox.aliases ||= [];
+      session.mailbox.aliases.push(alias);
+      await audit(db, session.mailbox.email, "alias_created", { alias: alias.email, forwardTo: alias.forwardTo, dryRun: MAILU_DRY_RUN });
+      await writeDb(db);
+      return json(res, 201, { alias: publicAlias(alias), aliases: session.mailbox.aliases.map(publicAlias) });
+    } catch (error) {
+      return json(res, 502, { error: error instanceof Error ? error.message : "Alias creation failed." });
+    }
+  }
+
+  const aliasRoute = url.pathname.match(/^\/api\/me\/aliases\/([^/]+)$/);
+  if (aliasRoute && req.method === "PATCH") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    const alias = getAlias(session.mailbox, decodeURIComponent(aliasRoute[1]));
+    if (!alias) return json(res, 404, { error: "Alias not found." });
+    const body = await parseBody(req);
+    const previousForwardTo = [...(alias.forwardTo || [])];
+    if (body.label !== undefined) alias.label = String(body.label || "").trim().slice(0, 60);
+    if (body.forwardTo !== undefined) {
+      const parsedForwards = parseForwardTo(body.forwardTo, session.mailbox.email);
+      if (parsedForwards.error) return json(res, 400, { error: parsedForwards.error });
+      alias.forwardTo = parsedForwards.forwardTo;
+    }
+    if (body.disabled !== undefined) {
+      const disabled = Boolean(body.disabled);
+      alias.status = disabled ? "disabled" : "active";
+      if (disabled) alias.disabledAt ||= nowIso();
+      else delete alias.disabledAt;
+    }
+    try {
+      alias.providerResult = await upsertMailuAlias(session.mailbox, alias, alias.status === "active");
+      await audit(db, session.mailbox.email, "alias_updated", { alias: alias.email, forwardTo: alias.forwardTo, previousForwardTo, status: alias.status, dryRun: MAILU_DRY_RUN });
+      await writeDb(db);
+      return json(res, 200, { alias: publicAlias(alias), aliases: (session.mailbox.aliases || []).map(publicAlias) });
+    } catch (error) {
+      return json(res, 502, { error: error instanceof Error ? error.message : "Alias update failed." });
+    }
+  }
+
+  if (aliasRoute && req.method === "DELETE") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    const alias = getAlias(session.mailbox, decodeURIComponent(aliasRoute[1]));
+    if (!alias) return json(res, 404, { error: "Alias not found." });
+    try {
+      await deleteMailuAlias(alias);
+      session.mailbox.aliases = (session.mailbox.aliases || []).filter((item) => item.id !== alias.id);
+      await audit(db, session.mailbox.email, "alias_deleted", { alias: alias.email, dryRun: MAILU_DRY_RUN });
+      await writeDb(db);
+      return json(res, 200, { deleted: true, aliases: (session.mailbox.aliases || []).map(publicAlias) });
+    } catch (error) {
+      return json(res, 502, { error: error instanceof Error ? error.message : "Alias delete failed." });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/me/verification-codes") {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    if (!session.encPassword) return json(res, 400, { error: "Please log in again to scan verification codes." });
+    const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 10), 1), 20);
+    try {
+      const password = decrypt(session.encPassword);
+      const aliases = activeAliases(session.mailbox);
+      const emails = await fetchEmails(session.mailbox.email, password, "inbox", aliases);
+      const matches: VerificationMatch[] = [];
+      for (const item of emails.slice(0, limit)) {
+        const detail = await fetchEmailBody(session.mailbox.email, password, item.uid, "inbox", aliases);
+        if (detail.verification) matches.push(detail.verification);
+      }
+      return json(res, 200, { matches: matches.slice(0, limit) });
+    } catch (error) {
+      return json(res, 500, { error: error instanceof Error ? error.message : "Failed to scan verification codes." });
+    }
+  }
 
   if (req.method === "GET" && url.pathname === "/api/me/emails") {
     const session = await getSession(req, db);
@@ -1194,7 +1494,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     try {
       const password = decrypt(session.encPassword);
       const folder = normalizeFolder(url.searchParams.get("folder"));
-      const emails = await fetchEmails(session.mailbox.email, password, folder);
+      const emails = await fetchEmails(session.mailbox.email, password, folder, activeAliases(session.mailbox));
       return json(res, 200, { emails });
     } catch (error) {
       console.error("[ERROR] Failed to fetch emails via IMAP:", error);
@@ -1213,7 +1513,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (!uid) return json(res, 400, { error: "Missing uid parameter." });
     try {
       const password = decrypt(session.encPassword);
-      const email = await fetchEmailBody(session.mailbox.email, password, uid, folder);
+      const email = await fetchEmailBody(session.mailbox.email, password, uid, folder, activeAliases(session.mailbox));
       return json(res, 200, { email });
     } catch (error) {
       console.error("[ERROR] Failed to fetch email body via IMAP:", error);
@@ -1231,12 +1531,24 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const recipients = normalizeRecipients(body.to);
     const subject = String(body.subject || "").trim().slice(0, 180) || "(No subject)";
     const messageBody = String(body.body || "").slice(0, 20_000);
+    const fromAliasId = String(body.fromAliasId || "").trim();
+    const replyToUid = String(body.replyToUid || "").trim();
+    const replyFolder = normalizeFolder(body.replyFolder);
     if (!recipients.length) return json(res, 400, { error: "Enter at least one valid recipient." });
     if (!messageBody.trim()) return json(res, 400, { error: "Message body is required." });
     try {
       const password = decrypt(session.encPassword);
-      const result = await sendPlainEmail(session.mailbox.email, password, recipients, subject, messageBody);
-      await audit(db, session.mailbox.email, "email_sent", { to: recipients, subject, dryRun: MAILU_DRY_RUN });
+      let fromAddress = session.mailbox.email;
+      if (fromAliasId) {
+        const alias = getAlias(session.mailbox, fromAliasId);
+        if (!alias || alias.status !== "active") return json(res, 403, { error: "Alias sender is not available." });
+        if (!replyToUid) return json(res, 400, { error: "Alias replies require an original message." });
+        const original = await fetchEmailBody(session.mailbox.email, password, replyToUid, replyFolder, activeAliases(session.mailbox));
+        if (original.deliveredToAlias?.id !== alias.id) return json(res, 403, { error: "You can only reply from an alias that received the original message." });
+        fromAddress = alias.email;
+      }
+      const result = await sendPlainEmail(session.mailbox.email, password, recipients, subject, messageBody, fromAddress);
+      await audit(db, session.mailbox.email, "email_sent", { to: recipients, subject, from: fromAddress, dryRun: MAILU_DRY_RUN });
       await writeDb(db);
       return json(res, 200, { result });
     } catch (error) {
@@ -1332,7 +1644,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     try {
       const password = decrypt(session.encPassword || "");
-      const emails = await fetchEmails(session.mailbox.email, password, "inbox");
+      const emails = await fetchEmails(session.mailbox.email, password, "inbox", activeAliases(session.mailbox));
       return json(res, 200, { emails });
     } catch (error) {
       return json(res, 500, { error: error instanceof Error ? error.message : "Failed to sync temp inbox." });
@@ -1349,7 +1661,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (!uid) return json(res, 400, { error: "Missing uid parameter." });
     try {
       const password = decrypt(session.encPassword || "");
-      const email = await fetchEmailBody(session.mailbox.email, password, uid, "inbox");
+      const email = await fetchEmailBody(session.mailbox.email, password, uid, "inbox", activeAliases(session.mailbox));
       return json(res, 200, { email });
     } catch (error) {
       return json(res, 500, { error: error instanceof Error ? error.message : "Failed to load temp message." });
@@ -1403,8 +1715,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 }
 
 function publicMailbox(mailbox: Mailbox): PublicMailbox {
-  const { passwordHash, providerResult, ...publicFields } = mailbox;
-  return publicFields;
+  const { passwordHash, providerResult, aliases, ...publicFields } = mailbox;
+  return { ...publicFields, aliases: (aliases || []).map(publicAlias) };
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1415,7 +1727,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.writeHead(204, {
         "access-control-allow-origin": CLIENT_ORIGIN,
         "access-control-allow-credentials": "true",
-        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
         "access-control-allow-headers": "content-type,x-admin-token"
       });
       return res.end();
@@ -1429,6 +1741,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         dryRun: MAILU_DRY_RUN,
         defaultQuotaMb: DEFAULT_QUOTA_MB,
         defaultOutboundDailyLimit: DEFAULT_OUTBOUND_DAILY_LIMIT,
+        defaultAliasLimit: DEFAULT_ALIAS_LIMIT,
+        aliasForwardLimit: ALIAS_FORWARD_LIMIT,
         tempMailEnabled: TEMP_MAIL_ENABLED
       });
     }

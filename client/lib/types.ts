@@ -5,7 +5,31 @@ export type PublicConfig = {
   dryRun: boolean;
   defaultQuotaMb: number;
   defaultOutboundDailyLimit: number;
+  defaultAliasLimit?: number;
+  aliasForwardLimit?: number;
   tempMailEnabled: boolean;
+};
+
+export type PublicMailAlias = {
+  id: string;
+  local: string;
+  email: string;
+  label?: string;
+  status: "active" | "disabled";
+  forwardTo: string[];
+  createdAt: string;
+  disabledAt?: string;
+};
+
+export type VerificationMatch = {
+  uid: string;
+  subject: string;
+  from: string;
+  code?: string;
+  loginUrl?: string;
+  serviceHint?: string;
+  date: string;
+  confidence: number;
 };
 
 export type PublicMailbox = {
@@ -18,6 +42,8 @@ export type PublicMailbox = {
   status: "dry-run" | "active";
   quotaMb: number;
   outboundDailyLimit: number;
+  aliasLimit?: number;
+  aliases?: PublicMailAlias[];
   createdAt: string;
   inviteCode?: string;
   expiresAt?: string;
@@ -46,5 +72,8 @@ export type EmailMessage = {
   uid: string;
   subject: string;
   from: string;
+  to?: string;
+  deliveredToAlias?: PublicMailAlias;
+  verification?: VerificationMatch;
   date: string;
 };
