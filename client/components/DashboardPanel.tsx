@@ -141,9 +141,6 @@ export function DashboardPanel() {
   const [moving, setMoving] = useState(false);
   const [aliases, setAliases] = useState<PublicMailAlias[]>([]);
   const [aliasLimit, setAliasLimit] = useState(5);
-  const [forwardLimit, setForwardLimit] = useState(3);
-  const [aliasMessage, setAliasMessage] = useState("");
-  const [aliasBusy, setAliasBusy] = useState(false);
   const [verificationMatches, setVerificationMatches] = useState<VerificationMatch[]>([]);
   const [verificationLoading, setVerificationLoading] = useState(false);
 
@@ -265,13 +262,6 @@ export function DashboardPanel() {
     setComposeOpen(true);
   }
 
-  async function fetchAliases() {
-    const result = await api<{ aliases: PublicMailAlias[]; limit: number; forwardLimit: number }>("/api/me/aliases");
-    setAliases(result.aliases);
-    setAliasLimit(result.limit);
-    setForwardLimit(result.forwardLimit);
-  }
-
   async function fetchVerificationCodes() {
     setVerificationLoading(true);
     try {
@@ -281,61 +271,6 @@ export function DashboardPanel() {
       setVerificationMatches([]);
     } finally {
       setVerificationLoading(false);
-    }
-  }
-
-  async function submitAlias(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    setAliasBusy(true);
-    setAliasMessage("Creating alias...");
-    try {
-      const result = await api<{ aliases: PublicMailAlias[] }>("/api/me/aliases", {
-        method: "POST",
-        body: JSON.stringify({
-          local: form.get("local"),
-          label: form.get("label"),
-          forwardTo: String(form.get("forwardTo") || "").split(/[;,\n]/).map((item) => item.trim()).filter(Boolean)
-        })
-      });
-      setAliases(result.aliases);
-      setAliasMessage("Alias created.");
-      event.currentTarget.reset();
-    } catch (error) {
-      setAliasMessage(error instanceof Error ? error.message : "Alias change failed.");
-    } finally {
-      setAliasBusy(false);
-    }
-  }
-
-  async function patchAlias(alias: PublicMailAlias, patch: Record<string, unknown>) {
-    setAliasBusy(true);
-    setAliasMessage("Updating alias...");
-    try {
-      const result = await api<{ aliases: PublicMailAlias[] }>(`/api/me/aliases/${encodeURIComponent(alias.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify(patch)
-      });
-      setAliases(result.aliases);
-      setAliasMessage("Alias updated.");
-    } catch (error) {
-      setAliasMessage(error instanceof Error ? error.message : "Alias update failed.");
-    } finally {
-      setAliasBusy(false);
-    }
-  }
-
-  async function deleteAlias(alias: PublicMailAlias) {
-    setAliasBusy(true);
-    setAliasMessage("Deleting alias...");
-    try {
-      const result = await api<{ aliases: PublicMailAlias[] }>(`/api/me/aliases/${encodeURIComponent(alias.id)}`, { method: "DELETE" });
-      setAliases(result.aliases);
-      setAliasMessage("Alias deleted.");
-    } catch (error) {
-      setAliasMessage(error instanceof Error ? error.message : "Alias delete failed.");
-    } finally {
-      setAliasBusy(false);
     }
   }
 
@@ -490,45 +425,14 @@ export function DashboardPanel() {
               </button>
             ))}
           </nav>
-          <div className="border border-line bg-white p-3">
-            <div className="flex items-center justify-between gap-3">
-              <div><p className="eyebrow m-0 text-[9px]">Aliases</p><strong className="text-sm text-ink">{activeAliasCount}/{aliasLimit}</strong></div>
-              <button className="text-xs font-bold text-cta" type="button" onClick={() => fetchAliases().catch((error) => setAliasMessage(error.message))}>Refresh</button>
-            </div>
-            <form className="mt-3 grid gap-2" onSubmit={submitAlias}>
-              <input className="min-h-9 border border-line bg-[#fbfaf7] px-2 text-xs outline-none focus:border-cta" name="local" placeholder="alias" required />
-              <input className="min-h-9 border border-line bg-[#fbfaf7] px-2 text-xs outline-none focus:border-cta" name="label" placeholder="Label" />
-              <textarea className="min-h-16 border border-line bg-[#fbfaf7] px-2 py-2 text-xs outline-none focus:border-cta" name="forwardTo" placeholder={`Forward to, max ${forwardLimit}`} />
-              <button className="button button-secondary min-h-[36px] px-3 text-xs" type="submit" disabled={aliasBusy || activeAliasCount >= aliasLimit}>Create alias</button>
-            </form>
-            <div className="mt-3 grid gap-2">
-              {aliases.length ? aliases.map((alias) => (
-                <div key={alias.id} className="border-t border-line pt-2 text-xs">
-                  <div className="flex items-start justify-between gap-2">
-                    <button type="button" className="min-w-0 text-left font-bold text-ink hover:text-cta" onClick={() => copyText(alias.email)}>{alias.email}</button>
-                    <span className={alias.status === "active" ? "text-cta" : "text-muted"}>{alias.status}</span>
-                  </div>
-                  <form className="mt-2 grid gap-2" onSubmit={(event) => {
-                    event.preventDefault();
-                    const form = new FormData(event.currentTarget);
-                    patchAlias(alias, {
-                      label: form.get("label"),
-                      forwardTo: String(form.get("forwardTo") || "").split(/[;,\n]/).map((item) => item.trim()).filter(Boolean)
-                    });
-                  }}>
-                    <input className="min-h-8 border border-line bg-[#fbfaf7] px-2 text-xs outline-none focus:border-cta" name="label" defaultValue={alias.label || ""} placeholder="Label" />
-                    <textarea className="min-h-14 border border-line bg-[#fbfaf7] px-2 py-2 text-xs outline-none focus:border-cta" name="forwardTo" defaultValue={alias.forwardTo.join(", ")} placeholder="Forward recipients" />
-                    <button className="text-left text-[11px] font-bold text-cta" type="submit" disabled={aliasBusy}>Save routing</button>
-                  </form>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button className="text-[11px] font-bold text-cta" type="button" disabled={aliasBusy} onClick={() => patchAlias(alias, { disabled: alias.status === "active" })}>{alias.status === "active" ? "Disable" : "Enable"}</button>
-                    <button className="text-[11px] font-bold text-red-600" type="button" disabled={aliasBusy} onClick={() => deleteAlias(alias)}>Delete</button>
-                  </div>
-                </div>
-              )) : <p className="border-t border-line pt-3 text-xs leading-5 text-muted">No aliases yet.</p>}
-            </div>
-            <p className="mt-3 min-h-4 text-xs font-bold text-muted">{aliasMessage}</p>
-          </div>        </div>
+          <Link href="/dashboard/aliases" className="border border-line bg-white p-3 transition-colors hover:border-cta hover:bg-wash">
+            <span className="eyebrow m-0 block text-[9px]">Aliases</span>
+            <span className="mt-2 flex items-center justify-between gap-3">
+              <strong className="text-sm text-ink">{activeAliasCount}/{aliasLimit}</strong>
+              <span className="text-xs font-bold text-cta">Manage</span>
+            </span>
+          </Link>
+        </div>
 
         <div className="mt-auto border-t border-line p-5">
           <div className="mb-3 flex items-center justify-between text-xs font-bold text-muted">
@@ -646,18 +550,18 @@ export function DashboardPanel() {
                         {activeFolder === "inbox" ? (
               <div className="border-b border-line bg-[#fbfaf7] p-4">
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <div><p className="eyebrow m-0 text-[9px]">Verification tray</p><strong className="text-sm text-ink">Codes and login links</strong></div>
+                  <div><p className="eyebrow m-0 text-[9px]">Verification tray</p><strong className="text-sm text-ink">Verification codes</strong></div>
                   <button className="text-xs font-bold text-cta" type="button" onClick={() => fetchVerificationCodes().catch(() => undefined)}>{verificationLoading ? "Scanning..." : "Scan"}</button>
                 </div>
                 {verificationMatches.length ? (
                   <div className="grid gap-2">
                     {verificationMatches.slice(0, 3).map((match) => (
-                      <div key={`${match.uid}-${match.code || match.loginUrl}`} className="grid grid-cols-[1fr_auto] items-center gap-3 border border-line bg-white p-3 text-xs">
+                      <div key={`${match.uid}-${match.code}`} className="grid grid-cols-[1fr_auto] items-center gap-3 border border-line bg-white p-3 text-xs">
                         <span className="min-w-0"><strong className="block truncate text-ink">{match.serviceHint || senderName(match.from)}</strong><span className="mt-1 block truncate text-muted">{match.subject}</span></span>
                         <span className="flex items-center gap-2">
-                          <strong className="font-extrabold text-cta">{match.code || "Link"}</strong>
-                          <button className="grid h-8 w-8 place-items-center border border-line text-ink hover:border-cta hover:text-cta" type="button" onClick={() => match.code ? copyText(match.code) : match.loginUrl ? copyText(match.loginUrl) : undefined} aria-label={copiedValue === (match.code || match.loginUrl) ? "Copied" : "Copy verification value"} title={copiedValue === (match.code || match.loginUrl) ? "Copied" : "Copy"}>
-                            {copiedValue === (match.code || match.loginUrl) ? <CheckIcon className="h-4 w-4 text-cta" /> : <CopyIcon className="h-4 w-4" />}
+                          <strong className="font-extrabold text-cta">{match.code}</strong>
+                          <button className="grid h-8 w-8 place-items-center border border-line text-ink hover:border-cta hover:text-cta" type="button" onClick={() => match.code ? copyText(match.code) : undefined} aria-label={copiedValue === match.code ? "Copied" : "Copy verification code"} title={copiedValue === match.code ? "Copied" : "Copy"}>
+                            {copiedValue === match.code ? <CheckIcon className="h-4 w-4 text-cta" /> : <CopyIcon className="h-4 w-4" />}
                           </button>
                         </span>
                       </div>
@@ -800,9 +704,9 @@ export function DashboardPanel() {
                       {selectedDeliveredAlias ? <p className="mt-1 inline-flex border border-cta/30 bg-wash px-2 py-1 text-[11px] font-bold text-cta">Delivered to {selectedDeliveredAlias.email}</p> : null}
                       {selectedEmailBody?.verification ? (
                         <div className="mt-2 inline-flex items-center gap-2 border border-line bg-[#fbfaf7] px-3 py-2 text-xs font-bold text-ink">
-                          <span>{selectedEmailBody.verification.code ? `Code: ${selectedEmailBody.verification.code}` : "Login link"}</span>
-                          <button type="button" onClick={() => selectedEmailBody.verification?.code ? copyText(selectedEmailBody.verification.code) : selectedEmailBody.verification?.loginUrl ? copyText(selectedEmailBody.verification.loginUrl) : undefined} className="grid h-7 w-7 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta" aria-label="Copy verification value" title={copiedValue === (selectedEmailBody.verification.code || selectedEmailBody.verification.loginUrl) ? "Copied" : "Copy"}>
-                            {copiedValue === (selectedEmailBody.verification.code || selectedEmailBody.verification.loginUrl) ? <CheckIcon className="h-3.5 w-3.5 text-cta" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                          <span>Code: {selectedEmailBody.verification.code}</span>
+                          <button type="button" onClick={() => selectedEmailBody.verification?.code ? copyText(selectedEmailBody.verification.code) : undefined} className="grid h-7 w-7 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta" aria-label="Copy verification code" title={copiedValue === selectedEmailBody.verification.code ? "Copied" : "Copy"}>
+                            {copiedValue === selectedEmailBody.verification.code ? <CheckIcon className="h-3.5 w-3.5 text-cta" /> : <CopyIcon className="h-3.5 w-3.5" />}
                           </button>
                         </div>
                       ) : null}

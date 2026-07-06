@@ -26,7 +26,6 @@ export type VerificationMatch = {
   subject: string;
   from: string;
   code?: string;
-  loginUrl?: string;
   serviceHint?: string;
   date: string;
   confidence: number;

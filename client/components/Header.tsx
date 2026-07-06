@@ -11,7 +11,7 @@ type HeaderProps = {
 export function Header({ isLoggedIn }: HeaderProps) {
   const [isOpen, setIsOpen] = useState(false);
   const pathname = usePathname();
-  const isDashboard = pathname === "/dashboard";
+  const isDashboard = pathname?.startsWith("/dashboard");
 
   return (
     <header className="relative border-b border-line bg-white">

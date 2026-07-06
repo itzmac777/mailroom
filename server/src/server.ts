@@ -41,7 +41,6 @@ type VerificationMatch = {
   subject: string;
   from: string;
   code?: string;
-  loginUrl?: string;
   serviceHint?: string;
   date: string;
   confidence: number;
@@ -824,19 +823,17 @@ function extractVerification(input: { uid: string; subject: string; from: string
     /\b([0-9]{6})\b/
   ];
   const code = codePatterns.map((pattern) => text.match(pattern)?.[1]).find(Boolean);
-  const loginUrl = text.match(/https?:\/\/[^\s"'<>]+/i)?.[0]?.replace(/[).,]+$/, "");
   const subjectLooksRelevant = /(code|otp|verification|verify|login|security|sign in|signin)/i.test(input.subject || text);
-  if (!code && !loginUrl) return undefined;
+  if (!code) return undefined;
   if (code && !subjectLooksRelevant && !/(code|otp|verification|login)/i.test(text.slice(0, 500))) return undefined;
   return {
     uid: input.uid,
     subject: input.subject || "(No subject)",
     from: input.from || "Unknown Sender",
     code,
-    loginUrl,
     serviceHint: serviceHintFrom(input.from, input.subject),
     date: input.date,
-    confidence: code && subjectLooksRelevant ? 0.94 : code ? 0.82 : 0.68
+    confidence: subjectLooksRelevant ? 0.94 : 0.82
   };
 }
 
