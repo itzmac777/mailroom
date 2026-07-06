@@ -638,10 +638,15 @@ export function DashboardPanel() {
                 {verificationMatches.length ? (
                   <div className="grid gap-2">
                     {verificationMatches.slice(0, 3).map((match) => (
-                      <button key={`${match.uid}-${match.code || match.loginUrl}`} type="button" onClick={() => match.code ? copyText(match.code) : match.loginUrl ? copyText(match.loginUrl) : undefined} className="grid grid-cols-[1fr_auto] gap-3 border border-line bg-white p-3 text-left text-xs hover:border-cta">
+                      <div key={`${match.uid}-${match.code || match.loginUrl}`} className="grid grid-cols-[1fr_auto] items-center gap-3 border border-line bg-white p-3 text-xs">
                         <span className="min-w-0"><strong className="block truncate text-ink">{match.serviceHint || senderName(match.from)}</strong><span className="mt-1 block truncate text-muted">{match.subject}</span></span>
-                        <span className="font-extrabold text-cta">{match.code || "Link"}</span>
-                      </button>
+                        <span className="flex items-center gap-2">
+                          <strong className="font-extrabold text-cta">{match.code || "Link"}</strong>
+                          <button className="border border-line px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-ink hover:border-cta hover:text-cta" type="button" onClick={() => match.code ? copyText(match.code) : match.loginUrl ? copyText(match.loginUrl) : undefined}>
+                            Copy
+                          </button>
+                        </span>
+                      </div>
                     ))}
                   </div>
                 ) : <p className="text-xs leading-5 text-muted">{verificationLoading ? "Scanning recent inbox messages..." : "No recent verification codes found."}</p>}

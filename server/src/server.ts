@@ -802,10 +802,18 @@ function stripHtml(html: string): string {
 }
 
 function serviceHintFrom(from: string, subject: string): string | undefined {
-  const email = String(from || "").match(/<([^>]+)>/)?.[1] || from;
-  const domain = String(email || "").split("@").pop()?.replace(/^mail\.|^no-reply\.|^noreply\./, "");
-  if (domain) return domain.split(".")[0]?.replace(/[-_]/g, " ");
-  return String(subject || "").split(/\s+/).slice(0, 2).join(" ") || undefined;
+  const raw = String(from || "");
+  const email = raw.match(/<([^>]+)>/)?.[1] || raw;
+  const domain = String(email || "").split("@").pop()?.toLowerCase() || "";
+  const labels = domain.split(".").filter(Boolean);
+  const generic = new Set(["mail", "email", "smtp", "mx", "tm", "notification", "notifications", "notify", "no-reply", "noreply"]);
+  const brandLabel = labels.length > 1
+    ? [...labels].reverse().slice(1).find((label) => !generic.has(label))
+    : labels[0];
+  if (brandLabel) return brandLabel.replace(/[-_]/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  const display = raw.replace(/<.*?>/g, "").replace(/"/g, "").trim();
+  if (display && !/^(no-?reply|notifications?)$/i.test(display)) return display;
+  return String(subject || "").split(/\s+/).slice(0, 3).join(" ") || undefined;
 }
 
 function extractVerification(input: { uid: string; subject: string; from: string; date: string; body?: string; html?: string }): VerificationMatch | undefined {
@@ -1415,7 +1423,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       await writeDb(db);
       return json(res, 201, { alias: publicAlias(alias), aliases: session.mailbox.aliases.map(publicAlias) });
     } catch (error) {
-      return json(res, 502, { error: error instanceof Error ? error.message : "Alias creation failed." });
+      await audit(db, session.mailbox.email, "alias_provider_create_failed", { alias: alias.email, message: error instanceof Error ? error.message : String(error) });
+      await writeDb(db);
+      return json(res, 424, { error: error instanceof Error ? error.message : "Alias provider setup failed." });
     }
   }
 
@@ -1445,7 +1455,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       await writeDb(db);
       return json(res, 200, { alias: publicAlias(alias), aliases: (session.mailbox.aliases || []).map(publicAlias) });
     } catch (error) {
-      return json(res, 502, { error: error instanceof Error ? error.message : "Alias update failed." });
+      await audit(db, session.mailbox.email, "alias_provider_update_failed", { alias: alias.email, message: error instanceof Error ? error.message : String(error) });
+      await writeDb(db);
+      return json(res, 424, { error: error instanceof Error ? error.message : "Alias provider update failed." });
     }
   }
 
@@ -1461,7 +1473,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       await writeDb(db);
       return json(res, 200, { deleted: true, aliases: (session.mailbox.aliases || []).map(publicAlias) });
     } catch (error) {
-      return json(res, 502, { error: error instanceof Error ? error.message : "Alias delete failed." });
+      await audit(db, session.mailbox.email, "alias_provider_delete_failed", { alias: alias.email, message: error instanceof Error ? error.message : String(error) });
+      await writeDb(db);
+      return json(res, 424, { error: error instanceof Error ? error.message : "Alias provider delete failed." });
     }
   }
 
