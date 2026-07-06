@@ -177,15 +177,15 @@ export function TempInboxAccessPanel() {
 
   return (
     <main className="bg-[#fbfaf7] px-6 py-7 max-md:px-0 max-md:py-0">
-      <section className="mx-auto grid min-h-[calc(100vh-178px)] max-w-[1480px] grid-cols-[320px_minmax(360px,460px)_1fr] overflow-hidden border border-line bg-white shadow-soft max-lg:grid-cols-1 max-md:border-0">
-        <aside className="grid content-start gap-5 border-r border-line bg-soft/45 p-5 max-lg:border-b max-lg:border-r-0">
+      <section className="mx-auto grid min-h-[calc(100vh-178px)] max-w-[1480px] grid-cols-[300px_minmax(360px,460px)_minmax(0,1fr)] overflow-hidden border border-line bg-white shadow-soft max-xl:grid-cols-[280px_minmax(330px,430px)_minmax(0,1fr)] max-lg:grid-cols-1 max-md:min-h-[calc(100vh-56px)] max-md:border-0">
+        <aside className="grid min-h-0 min-w-0 content-start gap-5 overflow-y-auto border-r border-line bg-soft/45 p-5 max-lg:max-h-none max-lg:border-b max-lg:border-r-0 max-md:p-4">
           <div>
             <p className="eyebrow">Temp inbox access</p>
             <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-ink">Mailbox switcher</h1>
             <p className="mt-2 text-sm leading-6 text-muted">Add external inbox credentials, then switch between them without leaving this page.</p>
           </div>
 
-          <form className="grid gap-3 border border-line bg-white p-4" onSubmit={addAccount}>
+          <form className="grid gap-3 border border-line bg-white p-4 max-md:p-3" onSubmit={addAccount}>
             <label className="label text-xs">Email<input className="field min-h-11" name="email" type="email" placeholder="name@example.com" required /></label>
             <label className="label text-xs">Password<input className="field min-h-11" name="password" type="password" autoComplete="off" required /></label>
             <label className="label text-xs">Label<input className="field min-h-11" name="label" placeholder="Optional label" /></label>
@@ -218,26 +218,26 @@ export function TempInboxAccessPanel() {
           <p className="min-h-5 text-sm font-bold text-muted">{message}</p>
         </aside>
 
-        <section className="grid min-h-0 grid-rows-[auto_1fr] border-r border-line max-lg:border-b max-lg:border-r-0">
-          <header className="border-b border-line bg-white p-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
+        <section className="grid min-h-0 min-w-0 grid-rows-[auto_1fr] border-r border-line max-lg:min-h-[520px] max-lg:border-b max-lg:border-r-0">
+          <header className="min-w-0 border-b border-line bg-white p-5 max-md:p-4">
+            <div className="flex min-w-0 items-start justify-between gap-4">
+              <div className="min-w-0">
                 <p className="eyebrow m-0">Messages</p>
-                <h2 className="mt-2 text-2xl font-extrabold text-ink">{selectedAccount?.label || selectedAccount?.email || "No mailbox"}</h2>
+                <h2 className="mt-2 truncate text-2xl font-extrabold text-ink max-md:text-xl">{selectedAccount?.label || selectedAccount?.email || "No mailbox"}</h2>
               </div>
-              <button className="grid h-11 w-11 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta disabled:opacity-50" type="button" onClick={() => fetchMailbox()} disabled={!selectedAccount || fetching} aria-label="Fetch mailbox" title="Fetch mailbox">
+              <button className="grid h-11 w-11 shrink-0 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta disabled:opacity-50" type="button" onClick={() => fetchMailbox()} disabled={!selectedAccount || fetching} aria-label="Fetch mailbox" title="Fetch mailbox">
                 <RefreshIcon className={`h-5 w-5 ${fetching ? "animate-spin" : ""}`} />
               </button>
             </div>
 
-            <div className="mt-5 grid grid-cols-[90px_1fr_92px] gap-2 max-md:grid-cols-1">
+            <div className="mt-5 grid min-w-0 grid-cols-[84px_minmax(0,1fr)_84px] gap-2 max-md:grid-cols-1">
               <label className="label text-xs">Folder<input className="field min-h-10" value={folder} onChange={(event) => setFolder(event.target.value || "ALL")} /></label>
               <label className="label text-xs">Keyword<input className="field min-h-10" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="Search keyword" /></label>
               <label className="label text-xs">Max<input className="field min-h-10" value={maxCount} min={1} max={50} onChange={(event) => setMaxCount(Number(event.target.value) || 10)} type="number" /></label>
             </div>
           </header>
 
-          <div className="min-h-0 overflow-y-auto">
+          <div className="min-h-0 min-w-0 overflow-y-auto bg-white">
             {!selectedAccount ? (
               <div className="m-5 border border-line bg-[#fbfaf7] p-8 text-center text-muted">Add a mailbox to fetch messages.</div>
             ) : fetching && !messages.length ? (
@@ -245,7 +245,7 @@ export function TempInboxAccessPanel() {
                 {[1, 2, 3, 4].map((item) => <div key={item} className="grid gap-3 bg-white p-5"><div className="h-4 w-3/4 animate-pulse rounded bg-soft" /><div className="h-3 w-1/2 animate-pulse rounded bg-soft" /></div>)}
               </div>
             ) : messages.length ? messages.map((email) => (
-              <button key={email.id} type="button" onClick={() => setSelectedMessageId(email.id)} className={`grid w-full grid-cols-[1fr_auto] gap-4 border-b border-line p-5 text-left transition-colors ${selectedMessage?.id === email.id ? "bg-wash" : "hover:bg-[#fbfaf7]"}`}>
+              <button key={email.id} type="button" onClick={() => setSelectedMessageId(email.id)} className={`grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-line p-4 text-left transition-colors ${selectedMessage?.id === email.id ? "bg-wash" : "hover:bg-[#fbfaf7]"}`}>
                 <span className="min-w-0">
                   <span className="flex min-w-0 items-center gap-2">
                     {email.otp ? <span className="h-2 w-2 shrink-0 rounded-full bg-cta" /> : null}
@@ -253,7 +253,7 @@ export function TempInboxAccessPanel() {
                   </span>
                   <span className="mt-1 block truncate text-sm text-muted">{senderName(email.from)}</span>
                 </span>
-                <span className="text-xs font-bold text-muted">{formatDate(email.date)}</span>
+                <span className="max-w-[92px] shrink-0 text-right text-xs font-bold leading-5 text-muted">{formatDate(email.date)}</span>
               </button>
             )) : (
               <div className="m-5 border border-line bg-[#fbfaf7] p-8 text-center text-muted">No messages loaded. Refresh this mailbox to fetch messages.</div>
@@ -261,16 +261,16 @@ export function TempInboxAccessPanel() {
           </div>
         </section>
 
-        <section className="min-h-0 overflow-y-auto p-7 max-md:p-5">
+        <section className="min-h-0 min-w-0 overflow-y-auto bg-white p-7 max-lg:min-h-[560px] max-md:p-5">
           {selectedMessage ? (
-            <article className="mx-auto max-w-[780px]">
-              <div className="flex flex-wrap items-start justify-between gap-4">
+            <article className="mx-auto min-w-0 max-w-[820px]">
+              <div className="grid min-w-0 gap-4">
                 <div className="min-w-0">
                   <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-cta">Message preview</p>
-                  <h2 className="mt-4 text-[clamp(28px,4vw,48px)] font-semibold leading-none tracking-[-0.04em] text-ink">{selectedMessage.subject || "(No subject)"}</h2>
+                  <h2 className="mt-4 break-words text-[clamp(28px,3vw,42px)] font-semibold leading-[1.02] tracking-[-0.02em] text-ink">{selectedMessage.subject || "(No subject)"}</h2>
                 </div>
                 {selectedMessage.otp ? (
-                  <div className="inline-flex items-center gap-2 border border-line bg-[#fbfaf7] px-3 py-2 text-xs font-bold text-ink">
+                  <div className="inline-flex w-fit items-center gap-2 border border-line bg-[#fbfaf7] px-3 py-2 text-xs font-bold text-ink">
                     <span>Code: {selectedMessage.otp}</span>
                     <button className="grid h-7 w-7 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta" type="button" onClick={() => copyText(selectedMessage.otp)} aria-label={copiedValue === selectedMessage.otp ? "Copied code" : "Copy code"} title={copiedValue === selectedMessage.otp ? "Copied" : "Copy"}>
                       {copiedValue === selectedMessage.otp ? <CheckIcon className="h-3.5 w-3.5 text-cta" /> : <CopyIcon className="h-3.5 w-3.5" />}
@@ -285,7 +285,7 @@ export function TempInboxAccessPanel() {
                 <p>{formatDate(selectedMessage.date)}</p>
               </div>
 
-              <div className="mt-8 whitespace-pre-wrap border border-line/40 bg-[#faf9f6]/40 p-6 font-sans text-[15px] leading-7 text-muted max-md:p-4 max-md:text-sm max-md:leading-6">
+              <div className="mt-8 overflow-x-auto whitespace-pre-wrap break-words border border-line/40 bg-[#faf9f6]/40 p-6 font-sans text-[15px] leading-7 text-muted max-md:p-4 max-md:text-sm max-md:leading-6">
                 {cleanBody(selectedMessage.body) || "No message body content."}
               </div>
             </article>

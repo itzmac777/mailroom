@@ -11,12 +11,12 @@ type HeaderProps = {
 export function Header({ isLoggedIn }: HeaderProps) {
   const [isOpen, setIsOpen] = useState(false);
   const pathname = usePathname();
-  const isDashboard = pathname?.startsWith("/dashboard");
+  const isAppSurface = pathname?.startsWith("/dashboard") || pathname === "/temp/inbox";
 
   return (
     <header className="relative border-b border-line bg-white">
-      {/* Top Banner (hidden on dashboard) */}
-      {!isDashboard && (
+      {/* Top Banner (hidden on app surfaces) */}
+      {!isAppSurface && (
         <div className="bg-soft px-5 py-3 text-center text-sm text-ink border-b border-line">
           Private email infrastructure for teams that care about deliverability.
         </div>
