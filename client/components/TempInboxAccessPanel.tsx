@@ -74,6 +74,8 @@ export function TempInboxAccessPanel() {
   const [fetching, setFetching] = useState(false);
   const [message, setMessage] = useState("");
   const [copiedValue, setCopiedValue] = useState("");
+  const [isControlsOpen, setIsControlsOpen] = useState(false);
+  const [mobileView, setMobileView] = useState<"list" | "preview">("list");
 
   const selectedAccount = useMemo(() => accounts.find((account) => account.id === selectedAccountId) ?? accounts[0] ?? null, [accounts, selectedAccountId]);
   const selectedResult = selectedAccount ? resultsByAccount[selectedAccount.id] : null;
@@ -175,60 +177,133 @@ export function TempInboxAccessPanel() {
     }
   }
 
+  function renderControls() {
+    return (
+      <>
+        <div>
+          <p className="eyebrow">Temp inbox access</p>
+          <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-ink">Mailbox switcher</h1>
+          <p className="mt-2 text-sm leading-6 text-muted">Add external inbox credentials, then switch between them without leaving this page.</p>
+        </div>
+
+        <form className="grid gap-3 border border-line bg-white p-4 max-md:p-3" onSubmit={addAccount}>
+          <label className="label text-xs">Email<input className="field min-h-11" name="email" type="email" placeholder="name@example.com" required /></label>
+          <label className="label text-xs">Password<input className="field min-h-11" name="password" type="password" autoComplete="off" required /></label>
+          <label className="label text-xs">Label<input className="field min-h-11" name="label" placeholder="Optional label" /></label>
+          <button className="button button-primary min-h-[44px]" type="submit">Add mailbox</button>
+        </form>
+
+        <div className="grid gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <p className="eyebrow m-0 text-[10px]">Saved</p>
+            <span className="text-xs font-bold text-muted">{accounts.length} accounts</span>
+          </div>
+          {loadingAccounts ? (
+            <div className="border border-line bg-white p-4 text-sm text-muted">Loading accounts...</div>
+          ) : accounts.length ? (
+            <>
+              <label className="hidden max-lg:grid label text-xs">
+                Active mailbox
+                <select
+                  className="field min-h-11"
+                  value={selectedAccount?.id || ""}
+                  onChange={(event) => {
+                    setSelectedAccountId(event.target.value);
+                    setMobileView("list");
+                    setIsControlsOpen(false);
+                  }}
+                >
+                  {accounts.map((account) => <option key={account.id} value={account.id}>{account.label || account.email}</option>)}
+                </select>
+              </label>
+              <div className="grid gap-2 max-lg:hidden">
+                {accounts.map((account) => (
+                  <div key={account.id} className={`border p-3 ${selectedAccount?.id === account.id ? "border-cta bg-wash" : "border-line bg-white"}`}>
+                    <button className="w-full text-left" type="button" onClick={() => setSelectedAccountId(account.id)}>
+                      <strong className="block truncate text-sm text-ink">{account.label || account.email}</strong>
+                      <span className="mt-1 block truncate text-xs font-medium text-muted">{account.email}</span>
+                    </button>
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                      <span className="truncate text-[11px] font-bold text-muted">{account.lastFetchedAt ? `Synced ${formatDate(account.lastFetchedAt)}` : "Not synced yet"}</span>
+                      <button className="text-xs font-extrabold text-red-600" type="button" onClick={() => removeAccount(account)}>Remove</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {selectedAccount ? (
+                <div className="hidden border border-line bg-white p-3 max-lg:grid">
+                  <strong className="truncate text-sm text-ink">{selectedAccount.label || selectedAccount.email}</strong>
+                  <span className="mt-1 truncate text-xs font-medium text-muted">{selectedAccount.email}</span>
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <span className="truncate text-[11px] font-bold text-muted">{selectedAccount.lastFetchedAt ? `Synced ${formatDate(selectedAccount.lastFetchedAt)}` : "Not synced yet"}</span>
+                    <button className="text-xs font-extrabold text-red-600" type="button" onClick={() => removeAccount(selectedAccount)}>Remove</button>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="border border-line bg-white p-4 text-sm leading-6 text-muted">No mailboxes yet. Add one above to start.</div>
+          )}
+        </div>
+
+        <p className="min-h-5 text-sm font-bold text-muted">{message}</p>
+      </>
+    );
+  }
+
   return (
     <main className="bg-[#fbfaf7] px-6 py-7 max-md:px-0 max-md:py-0">
-      <section className="mx-auto grid min-h-[calc(100vh-178px)] max-w-[1480px] grid-cols-[300px_minmax(360px,460px)_minmax(0,1fr)] overflow-hidden border border-line bg-white shadow-soft max-xl:grid-cols-[280px_minmax(330px,430px)_minmax(0,1fr)] max-lg:grid-cols-1 max-md:min-h-[calc(100vh-56px)] max-md:border-0">
-        <aside className="grid min-h-0 min-w-0 content-start gap-5 overflow-y-auto border-r border-line bg-soft/45 p-5 max-lg:max-h-none max-lg:border-b max-lg:border-r-0 max-md:p-4">
-          <div>
-            <p className="eyebrow">Temp inbox access</p>
-            <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-ink">Mailbox switcher</h1>
-            <p className="mt-2 text-sm leading-6 text-muted">Add external inbox credentials, then switch between them without leaving this page.</p>
-          </div>
-
-          <form className="grid gap-3 border border-line bg-white p-4 max-md:p-3" onSubmit={addAccount}>
-            <label className="label text-xs">Email<input className="field min-h-11" name="email" type="email" placeholder="name@example.com" required /></label>
-            <label className="label text-xs">Password<input className="field min-h-11" name="password" type="password" autoComplete="off" required /></label>
-            <label className="label text-xs">Label<input className="field min-h-11" name="label" placeholder="Optional label" /></label>
-            <button className="button button-primary min-h-[44px]" type="submit">Add mailbox</button>
-          </form>
-
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-3">
-              <p className="eyebrow m-0 text-[10px]">Saved</p>
-              <span className="text-xs font-bold text-muted">{accounts.length} accounts</span>
+      {isControlsOpen ? (
+        <>
+          <div onClick={() => setIsControlsOpen(false)} className="fixed inset-0 z-40 bg-ink/30 backdrop-blur-sm" />
+          <aside className="fixed inset-y-0 left-0 z-50 hidden w-[320px] max-w-[88vw] overflow-y-auto border-r border-line bg-[#fbfaf7] p-5 shadow-xl max-lg:grid max-lg:content-start max-lg:gap-5 max-md:p-4">
+            <div className="flex items-center justify-between gap-4 border-b border-line bg-white p-4">
+              <span className="text-lg font-bold tracking-tight text-ink">Mailbox switcher</span>
+              <button className="grid h-9 w-9 place-items-center border border-line text-ink hover:text-cta" type="button" onClick={() => setIsControlsOpen(false)} aria-label="Close mailbox switcher">x</button>
             </div>
-            {loadingAccounts ? (
-              <div className="border border-line bg-white p-4 text-sm text-muted">Loading accounts...</div>
-            ) : accounts.length ? accounts.map((account) => (
-              <div key={account.id} className={`border p-3 ${selectedAccount?.id === account.id ? "border-cta bg-wash" : "border-line bg-white"}`}>
-                <button className="w-full text-left" type="button" onClick={() => setSelectedAccountId(account.id)}>
-                  <strong className="block truncate text-sm text-ink">{account.label || account.email}</strong>
-                  <span className="mt-1 block truncate text-xs font-medium text-muted">{account.email}</span>
-                </button>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <span className="truncate text-[11px] font-bold text-muted">{account.lastFetchedAt ? `Synced ${formatDate(account.lastFetchedAt)}` : "Not synced yet"}</span>
-                  <button className="text-xs font-extrabold text-red-600" type="button" onClick={() => removeAccount(account)}>Remove</button>
-                </div>
-              </div>
-            )) : (
-              <div className="border border-line bg-white p-4 text-sm leading-6 text-muted">No mailboxes yet. Add one above to start.</div>
-            )}
-          </div>
+            {renderControls()}
+          </aside>
+        </>
+      ) : null}
 
-          <p className="min-h-5 text-sm font-bold text-muted">{message}</p>
+      <section className="mx-auto grid min-h-[calc(100vh-178px)] max-w-[1480px] grid-cols-[300px_minmax(360px,460px)_minmax(0,1fr)] overflow-hidden border border-line bg-white shadow-soft max-xl:grid-cols-[280px_minmax(330px,430px)_minmax(0,1fr)] max-lg:grid-cols-1 max-md:min-h-[calc(100vh-56px)] max-md:border-0">
+        <aside className="grid min-h-0 min-w-0 content-start gap-5 overflow-y-auto border-r border-line bg-soft/45 p-5 max-lg:hidden">
+          {renderControls()}
         </aside>
 
-        <section className="grid min-h-0 min-w-0 grid-rows-[auto_1fr] border-r border-line max-lg:min-h-[520px] max-lg:border-b max-lg:border-r-0">
+        <section className={`grid min-h-0 min-w-0 grid-rows-[auto_1fr] border-r border-line max-lg:min-h-[calc(100vh-56px)] max-lg:border-b max-lg:border-r-0 ${mobileView === "preview" ? "max-lg:hidden" : "max-lg:grid"}`}>
           <header className="min-w-0 border-b border-line bg-white p-5 max-md:p-4">
             <div className="flex min-w-0 items-start justify-between gap-4">
-              <div className="min-w-0">
-                <p className="eyebrow m-0">Messages</p>
-                <h2 className="mt-2 truncate text-2xl font-extrabold text-ink max-md:text-xl">{selectedAccount?.label || selectedAccount?.email || "No mailbox"}</h2>
+              <div className="flex min-w-0 items-center gap-3">
+                <button className="hidden h-10 w-10 shrink-0 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta max-lg:grid max-md:h-8 max-md:w-8" type="button" onClick={() => setIsControlsOpen(true)} aria-label="Open mailbox switcher">
+                  <svg className="h-5 w-5 max-md:h-4 max-md:w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  </svg>
+                </button>
+                <div className="min-w-0">
+                  <p className="eyebrow m-0 max-md:text-[9px] max-md:tracking-wider">Temp inbox</p>
+                  <h2 className="mt-2 truncate text-2xl font-extrabold text-ink max-md:mt-1 max-md:text-lg">{selectedAccount?.label || selectedAccount?.email || "No mailbox"}</h2>
+                </div>
               </div>
               <button className="grid h-11 w-11 shrink-0 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta disabled:opacity-50" type="button" onClick={() => fetchMailbox()} disabled={!selectedAccount || fetching} aria-label="Fetch mailbox" title="Fetch mailbox">
                 <RefreshIcon className={`h-5 w-5 ${fetching ? "animate-spin" : ""}`} />
               </button>
             </div>
+
+            <label className="mt-4 hidden grid-cols-[auto_1fr] items-center gap-2 border border-line bg-[#fbfaf7] px-3 focus-within:border-cta max-lg:grid max-md:mt-3 max-md:px-2">
+              <span className="text-xs font-extrabold uppercase tracking-wide text-muted">Account</span>
+              <select
+                className="min-h-10 border-0 bg-transparent text-sm font-bold text-ink outline-none focus:outline-none"
+                value={selectedAccount?.id || ""}
+                onChange={(event) => {
+                  setSelectedAccountId(event.target.value);
+                  setMobileView("list");
+                }}
+              >
+                <option value="">No mailbox</option>
+                {accounts.map((account) => <option key={account.id} value={account.id}>{account.label || account.email}</option>)}
+              </select>
+            </label>
 
             <div className="mt-5 grid min-w-0 grid-cols-[84px_minmax(0,1fr)_84px] gap-2 max-md:grid-cols-1">
               <label className="label text-xs">Folder<input className="field min-h-10" value={folder} onChange={(event) => setFolder(event.target.value || "ALL")} /></label>
@@ -245,7 +320,10 @@ export function TempInboxAccessPanel() {
                 {[1, 2, 3, 4].map((item) => <div key={item} className="grid gap-3 bg-white p-5"><div className="h-4 w-3/4 animate-pulse rounded bg-soft" /><div className="h-3 w-1/2 animate-pulse rounded bg-soft" /></div>)}
               </div>
             ) : messages.length ? messages.map((email) => (
-              <button key={email.id} type="button" onClick={() => setSelectedMessageId(email.id)} className={`grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-line p-4 text-left transition-colors ${selectedMessage?.id === email.id ? "bg-wash" : "hover:bg-[#fbfaf7]"}`}>
+              <button key={email.id} type="button" onClick={() => {
+                setSelectedMessageId(email.id);
+                setMobileView("preview");
+              }} className={`grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-line p-4 text-left transition-colors ${selectedMessage?.id === email.id ? "bg-wash" : "hover:bg-[#fbfaf7]"}`}>
                 <span className="min-w-0">
                   <span className="flex min-w-0 items-center gap-2">
                     {email.otp ? <span className="h-2 w-2 shrink-0 rounded-full bg-cta" /> : null}
@@ -261,7 +339,24 @@ export function TempInboxAccessPanel() {
           </div>
         </section>
 
-        <section className="min-h-0 min-w-0 overflow-y-auto bg-white p-7 max-lg:min-h-[560px] max-md:p-5">
+        <section className={`grid min-h-0 min-w-0 grid-rows-[auto_1fr] bg-white ${mobileView === "list" ? "max-lg:hidden" : "max-lg:grid"}`}>
+          <header className="hidden min-h-[64px] items-center gap-3 border-b border-line px-4 py-3 max-lg:flex">
+            <button
+              type="button"
+              onClick={() => setMobileView("list")}
+              className="grid h-8 w-8 shrink-0 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta"
+              aria-label="Back to messages"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M19 12H5m7 7-7-7 7-7" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <div className="min-w-0">
+              <p className="text-[9px] font-extrabold uppercase tracking-[0.14em] text-cta">Message preview</p>
+              <p className="mt-1 truncate text-xs font-medium text-muted">{selectedMessage ? senderAddress(selectedMessage.from) : selectedAccount?.email || "No mailbox"}</p>
+            </div>
+          </header>
+          <div className="min-h-0 overflow-y-auto p-7 max-md:p-4">
           {selectedMessage ? (
             <article className="mx-auto min-w-0 max-w-[820px]">
               <div className="grid min-w-0 gap-4">
@@ -297,6 +392,7 @@ export function TempInboxAccessPanel() {
               </div>
             </div>
           )}
+          </div>
         </section>
       </section>
     </main>
