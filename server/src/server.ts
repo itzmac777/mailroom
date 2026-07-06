@@ -857,8 +857,7 @@ async function upsertMailuAlias(mailbox: Mailbox, alias: MailAlias, enabled = tr
       localpart: alias.local,
       domain: MAIL_DOMAIN,
       email: alias.email,
-      destination: aliasDestinations(mailbox, alias).join(","),
-      destinations: aliasDestinations(mailbox, alias),
+      destination: aliasDestinations(mailbox, alias),
       enabled,
       comment: "Created by Mailroom alias controls"
     })

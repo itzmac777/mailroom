@@ -53,6 +53,14 @@ function CopyIcon({ className = "" }: IconProps) {
   );
 }
 
+function CheckIcon({ className = "" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="m5 12 4.2 4.2L19 6.5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function SearchIcon({ className = "" }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -114,6 +122,7 @@ export function DashboardPanel() {
   const [selectedEmailUid, setSelectedEmailUid] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copiedValue, setCopiedValue] = useState("");
 
   const [showDetails, setShowDetails] = useState(false);
   const [emailBodies, setEmailBodies] = useState<Record<string, EmailBodyDetails>>({});
@@ -235,10 +244,15 @@ export function DashboardPanel() {
   async function copyText(value: string) {
     try {
       await navigator.clipboard.writeText(value);
+      setCopiedValue(value);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      window.setTimeout(() => {
+        setCopied(false);
+        setCopiedValue("");
+      }, 1600);
     } catch {
       setCopied(false);
+      setCopiedValue("");
     }
   }
 
@@ -642,8 +656,8 @@ export function DashboardPanel() {
                         <span className="min-w-0"><strong className="block truncate text-ink">{match.serviceHint || senderName(match.from)}</strong><span className="mt-1 block truncate text-muted">{match.subject}</span></span>
                         <span className="flex items-center gap-2">
                           <strong className="font-extrabold text-cta">{match.code || "Link"}</strong>
-                          <button className="border border-line px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-ink hover:border-cta hover:text-cta" type="button" onClick={() => match.code ? copyText(match.code) : match.loginUrl ? copyText(match.loginUrl) : undefined}>
-                            Copy
+                          <button className="grid h-8 w-8 place-items-center border border-line text-ink hover:border-cta hover:text-cta" type="button" onClick={() => match.code ? copyText(match.code) : match.loginUrl ? copyText(match.loginUrl) : undefined} aria-label={copiedValue === (match.code || match.loginUrl) ? "Copied" : "Copy verification value"} title={copiedValue === (match.code || match.loginUrl) ? "Copied" : "Copy"}>
+                            {copiedValue === (match.code || match.loginUrl) ? <CheckIcon className="h-4 w-4 text-cta" /> : <CopyIcon className="h-4 w-4" />}
                           </button>
                         </span>
                       </div>
@@ -784,7 +798,14 @@ export function DashboardPanel() {
                         <span className="text-muted/80 text-xs max-md:text-[10px] font-medium">&lt;{senderAddress(selectedEmail.from)}&gt;</span>
                       </div>
                       {selectedDeliveredAlias ? <p className="mt-1 inline-flex border border-cta/30 bg-wash px-2 py-1 text-[11px] font-bold text-cta">Delivered to {selectedDeliveredAlias.email}</p> : null}
-                      {selectedEmailBody?.verification ? <button type="button" onClick={() => selectedEmailBody.verification?.code ? copyText(selectedEmailBody.verification.code) : selectedEmailBody.verification?.loginUrl ? copyText(selectedEmailBody.verification.loginUrl) : undefined} className="mt-2 block border border-line bg-[#fbfaf7] px-3 py-2 text-left text-xs font-bold text-ink hover:border-cta">{selectedEmailBody.verification.code ? `Code: ${selectedEmailBody.verification.code}` : "Copy login link"}</button> : null}
+                      {selectedEmailBody?.verification ? (
+                        <div className="mt-2 inline-flex items-center gap-2 border border-line bg-[#fbfaf7] px-3 py-2 text-xs font-bold text-ink">
+                          <span>{selectedEmailBody.verification.code ? `Code: ${selectedEmailBody.verification.code}` : "Login link"}</span>
+                          <button type="button" onClick={() => selectedEmailBody.verification?.code ? copyText(selectedEmailBody.verification.code) : selectedEmailBody.verification?.loginUrl ? copyText(selectedEmailBody.verification.loginUrl) : undefined} className="grid h-7 w-7 place-items-center border border-line bg-white text-ink hover:border-cta hover:text-cta" aria-label="Copy verification value" title={copiedValue === (selectedEmailBody.verification.code || selectedEmailBody.verification.loginUrl) ? "Copied" : "Copy"}>
+                            {copiedValue === (selectedEmailBody.verification.code || selectedEmailBody.verification.loginUrl) ? <CheckIcon className="h-3.5 w-3.5 text-cta" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      ) : null}
                       <div className="relative mt-0.5">
                         <button
                           type="button"
