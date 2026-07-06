@@ -182,7 +182,7 @@ export function TempInboxAccessPanel() {
       <>
         <div>
           <p className="eyebrow">Temp inbox access</p>
-          <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-ink">Mailbox switcher</h1>
+          <h1 className="text-xl font-extrabold tracking-[-0.02em] text-ink">Mailbox switcher</h1>
           <p className="mt-2 text-sm leading-6 text-muted">Add external inbox credentials, then switch between them without leaving this page.</p>
         </div>
 
@@ -220,7 +220,7 @@ export function TempInboxAccessPanel() {
                 {accounts.map((account) => (
                   <div key={account.id} className={`border p-3 ${selectedAccount?.id === account.id ? "border-cta bg-wash" : "border-line bg-white"}`}>
                     <button className="w-full text-left" type="button" onClick={() => setSelectedAccountId(account.id)}>
-                      <strong className="block truncate text-sm text-ink">{account.label || account.email}</strong>
+                      <strong className="block truncate text-[13px] text-ink">{account.label || account.email}</strong>
                       <span className="mt-1 block truncate text-xs font-medium text-muted">{account.email}</span>
                     </button>
                     <div className="mt-3 flex items-center justify-between gap-2">
@@ -232,7 +232,7 @@ export function TempInboxAccessPanel() {
               </div>
               {selectedAccount ? (
                 <div className="hidden border border-line bg-white p-3 max-lg:grid">
-                  <strong className="truncate text-sm text-ink">{selectedAccount.label || selectedAccount.email}</strong>
+                  <strong className="truncate text-[13px] text-ink">{selectedAccount.label || selectedAccount.email}</strong>
                   <span className="mt-1 truncate text-xs font-medium text-muted">{selectedAccount.email}</span>
                   <div className="mt-3 flex items-center justify-between gap-2">
                     <span className="truncate text-[11px] font-bold text-muted">{selectedAccount.lastFetchedAt ? `Synced ${formatDate(selectedAccount.lastFetchedAt)}` : "Not synced yet"}</span>
@@ -282,7 +282,7 @@ export function TempInboxAccessPanel() {
                 </button>
                 <div className="min-w-0">
                   <p className="eyebrow m-0 max-md:text-[9px] max-md:tracking-wider">Temp inbox</p>
-                  <h2 className="mt-2 truncate text-2xl font-extrabold text-ink max-md:mt-1 max-md:text-lg">{selectedAccount?.label || selectedAccount?.email || "No mailbox"}</h2>
+                  <h2 className="mt-2 truncate text-xl font-extrabold text-ink max-md:mt-1 max-md:text-lg">{selectedAccount?.label || selectedAccount?.email || "No mailbox"}</h2>
                 </div>
               </div>
               <button className="grid h-11 w-11 shrink-0 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta disabled:opacity-50" type="button" onClick={() => fetchMailbox()} disabled={!selectedAccount || fetching} aria-label="Fetch mailbox" title="Fetch mailbox">
@@ -293,7 +293,7 @@ export function TempInboxAccessPanel() {
             <label className="mt-4 hidden grid-cols-[auto_1fr] items-center gap-2 border border-line bg-[#fbfaf7] px-3 focus-within:border-cta max-lg:grid max-md:mt-3 max-md:px-2">
               <span className="text-xs font-extrabold uppercase tracking-wide text-muted">Account</span>
               <select
-                className="min-h-10 border-0 bg-transparent text-sm font-bold text-ink outline-none focus:outline-none"
+                className="min-h-10 border-0 bg-transparent text-[13px] font-bold text-ink outline-none focus:outline-none"
                 value={selectedAccount?.id || ""}
                 onChange={(event) => {
                   setSelectedAccountId(event.target.value);
@@ -327,7 +327,7 @@ export function TempInboxAccessPanel() {
                 <span className="min-w-0">
                   <span className="flex min-w-0 items-center gap-2">
                     {email.otp ? <span className="h-2 w-2 shrink-0 rounded-full bg-cta" /> : null}
-                    <strong className="block truncate text-ink">{email.subject || "(No subject)"}</strong>
+                    <strong className="block truncate text-[14px] font-bold text-ink">{email.subject || "(No subject)"}</strong>
                   </span>
                   <span className="mt-1 block truncate text-sm text-muted">{senderName(email.from)}</span>
                 </span>
@@ -362,7 +362,7 @@ export function TempInboxAccessPanel() {
               <div className="grid min-w-0 gap-4">
                 <div className="min-w-0">
                   <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-cta">Message preview</p>
-                  <h2 className="mt-4 break-words text-[clamp(28px,3vw,42px)] font-semibold leading-[1.02] tracking-[-0.02em] text-ink">{selectedMessage.subject || "(No subject)"}</h2>
+                  <h2 className="mt-4 break-words text-[clamp(24px,2.5vw,34px)] font-semibold leading-[1.08] tracking-[-0.01em] text-ink">{selectedMessage.subject || "(No subject)"}</h2>
                 </div>
                 {selectedMessage.otp ? (
                   <div className="inline-flex w-fit items-center gap-2 border border-line bg-[#fbfaf7] px-3 py-2 text-xs font-bold text-ink">
