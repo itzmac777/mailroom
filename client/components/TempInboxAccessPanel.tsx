@@ -53,13 +53,111 @@ function senderAddress(from: string) {
 
 function cleanBody(value: string) {
   return String(value || "")
+    .replace(/\r\n/g, "\n")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[ \t]*\u2800+[ \t]*/g, " ")
     .replace(/[ \t]{3,}/g, "  ")
     .replace(/\n{4,}/g, "\n\n\n")
     .trim();
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function plainTextToEmailHtml(body: string, subject: string, otp: string) {
+  let text = cleanBody(body);
+  const normalizedSubject = subject.replace(/\s+/g, " ").trim();
+
+  if (normalizedSubject && text.toLowerCase().startsWith(normalizedSubject.toLowerCase())) {
+    text = text.slice(normalizedSubject.length).trim();
+  }
+
+  text = text
+    .replace(/<((?:https?:\/\/|www\.)[^>\s]+)>/gi, "$1")
+    .replace(/\s+(?=(?:Hello|If |Please |Best,|The |App :|Time :|Approximate location :|Device :|Manage your|Enjoy your|Order number:))/g, "\n\n")
+    .replace(/([.!?])\s+(?=(?:If|Please|Best|The|OpenAI|ChatGPT|Manage|Enjoy|You|Hello)\b)/g, "$1\n\n");
+
+  if (otp) {
+    text = text.replace(new RegExp(`\\b${escapeRegExp(otp)}\\b\\s+`, "g"), `${otp}\n\n`);
+  }
+
+  const paragraphs = text.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
+  if (!paragraphs.length) return "<p>No message body content.</p>";
+
+  return paragraphs.map((paragraph) => {
+    let html = escapeHtml(paragraph)
+      .replace(/\n/g, "<br />")
+      .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>');
+
+    if (otp) {
+      html = html.replace(new RegExp(`\\b${escapeRegExp(escapeHtml(otp))}\\b`, "g"), `<span class="otp-code">${escapeHtml(otp)}</span>`);
+    }
+
+    return `<p>${html}</p>`;
+  }).join("");
+}
+
+function emailBodySrcDoc(message: TempInboxMessage) {
+  const hasHtml = Boolean(message.html?.trim());
+  const content = hasHtml ? message.html : `<main class="generated-mail">${plainTextToEmailHtml(message.body, message.subject, message.otp)}</main>`;
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-size: 14px;
+            line-height: 1.62;
+            color: #252525;
+            margin: 12px;
+            background: #ffffff;
+          }
+          a { color: #3148d4; text-decoration: underline; }
+          p { margin-top: 0; margin-bottom: 1em; }
+          img { max-width: 100% !important; height: auto !important; }
+          table, div, p { max-width: 100% !important; box-sizing: border-box !important; }
+          .generated-mail {
+            max-width: 640px;
+            margin: 34px auto;
+          }
+          .generated-mail p {
+            margin-bottom: 18px;
+          }
+          .otp-code {
+            display: inline-block;
+            margin: 4px 0;
+            padding: 14px 26px;
+            border-radius: 12px;
+            background: #f0f0f0;
+            color: #424242;
+            font-size: 24px;
+            letter-spacing: 0.08em;
+            line-height: 1;
+          }
+        </style>
+      </head>
+      <body>
+        ${content}
+      </body>
+    </html>
+  `;
 }
 
 export function TempInboxAccessPanel() {
@@ -380,8 +478,12 @@ export function TempInboxAccessPanel() {
                 <p>{formatDate(selectedMessage.date)}</p>
               </div>
 
-              <div className="mt-8 overflow-x-auto whitespace-pre-wrap break-words border border-line/40 bg-[#faf9f6]/40 p-6 font-sans text-[15px] leading-7 text-muted max-md:p-4 max-md:text-sm max-md:leading-6">
-                {cleanBody(selectedMessage.body) || "No message body content."}
+              <div className="mt-8 h-[550px] overflow-hidden border border-line/40 bg-white max-md:h-[calc(100vh-300px)] max-md:min-h-[360px]">
+                <iframe
+                  srcDoc={emailBodySrcDoc(selectedMessage)}
+                  className="h-full w-full border-0 bg-white"
+                  title="Email content"
+                />
               </div>
             </article>
           ) : (

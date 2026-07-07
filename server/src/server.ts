@@ -865,13 +865,18 @@ function publicTempInboxAccount(account: TempInboxAccount): PublicTempInboxAccou
 }
 
 function normalizeTempInboxMessage(value: any) {
+  const body = String(value?.body || value?.text || "");
+  const explicitHtml = String(value?.html || value?.bodyHtml || value?.body_html || value?.htmlBody || value?.textAsHtml || "");
+  const html = explicitHtml || (/<(?:html|body|table|div|p|br|span|img|a)\b/i.test(body) ? body : "");
+
   return {
     id: String(value?.id ?? value?.uid ?? value?.messageId ?? randomToken(8)),
     from: String(value?.from || "Unknown Sender"),
     to: String(value?.to || ""),
     subject: String(value?.subject || "(No subject)"),
     date: String(value?.date || nowIso()),
-    body: String(value?.body || value?.text || ""),
+    body,
+    html,
     otp: String(value?.otp || "")
   };
 }

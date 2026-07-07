@@ -106,6 +106,7 @@ export type TempInboxMessage = {
   subject: string;
   date: string;
   body: string;
+  html?: string;
   otp: string;
 };
 
