@@ -27,6 +27,7 @@ export type PublicForwardingRecipient = {
   id: string;
   email: string;
   status: "pending" | "verified";
+  includeInGlobalForwarding?: boolean;
   createdAt: string;
   verifiedAt?: string;
   disabledAt?: string;

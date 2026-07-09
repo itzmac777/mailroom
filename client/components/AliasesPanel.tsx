@@ -59,6 +59,7 @@ export function AliasesPanel() {
 
   const activeAliasCount = useMemo(() => aliases.filter((alias) => alias.status === "active").length, [aliases]);
   const verifiedForwardingCount = useMemo(() => forwardingRecipients.filter((recipient) => recipient.status === "verified" && !recipient.disabledAt).length, [forwardingRecipients]);
+  const verifiedForwardingEmails = useMemo(() => forwardingRecipients.filter((recipient) => recipient.status === "verified" && !recipient.disabledAt).map((recipient) => recipient.email), [forwardingRecipients]);
   const isBusy = Boolean(busyAction);
 
   async function refresh() {
@@ -191,6 +192,24 @@ export function AliasesPanel() {
     }
   }
 
+  async function toggleRecipientPrimaryForwarding(recipient: PublicForwardingRecipient, includeInGlobalForwarding: boolean) {
+    setBusyAction(`primary-forward-${recipient.id}`);
+    setForwardingMessage(includeInGlobalForwarding ? "Adding recipient to primary mail..." : "Removing recipient from primary mail...");
+    try {
+      const result = await api<{ recipients: PublicForwardingRecipient[]; enabled: boolean }>(`/api/me/forwarding/recipients/${encodeURIComponent(recipient.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ includeInGlobalForwarding })
+      });
+      setForwardingRecipients(result.recipients);
+      setForwardingEnabled(result.enabled);
+      setForwardingMessage(includeInGlobalForwarding ? "Recipient receives primary mail." : result.enabled ? "Recipient is alias-only." : "Recipient is alias-only. Global forwarding is off.");
+    } catch (error) {
+      setForwardingMessage(error instanceof Error ? error.message : "Could not update recipient routing.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   async function toggleForwarding(enabled: boolean) {
     setBusyAction("forward-toggle");
     setForwardingMessage(enabled ? "Enabling forwarding..." : "Disabling forwarding...");
@@ -294,7 +313,8 @@ export function AliasesPanel() {
               </div>
               <label className="label text-xs">Local part<input className="field min-h-11" name="local" placeholder="shop" required /></label>
               <label className="label text-xs">Label<input className="field min-h-11" name="label" placeholder="Shopping, trials, vendors" /></label>
-              <label className="label text-xs">Alias forwarding<textarea className="min-h-24 border border-line bg-white px-3 py-3 text-sm outline-none focus:border-cta" name="forwardTo" placeholder={`Optional, max ${forwardLimit}. Separate by comma or line.`} /></label>
+              <label className="label text-xs">Alias forwarding<textarea className="min-h-24 border border-line bg-white px-3 py-3 text-sm outline-none focus:border-cta" name="forwardTo" placeholder={verifiedForwardingEmails.length ? `Verified only: ${verifiedForwardingEmails.slice(0, 2).join(", ")}` : "Add and verify a global recipient first."} /></label>
+              <p className="-mt-1 text-xs font-semibold leading-5 text-muted">Use verified global recipients only, max {forwardLimit}. Separate by comma or line.</p>
               <button className="button button-primary min-h-[44px] w-full px-4" type="submit" disabled={isBusy || activeAliasCount >= aliasLimit}>{busyAction === "create" ? "Creating..." : "Create alias"}</button>
             </form>
 
@@ -333,7 +353,19 @@ export function AliasesPanel() {
                         <strong className="break-all text-sm text-ink">{recipient.email}</strong>
                         <span className={`ml-2 inline-flex border px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide ${recipient.status === "verified" ? "border-cta/30 bg-wash text-cta" : "border-line bg-[#fbfaf7] text-muted"}`}>{recipient.status}</span>
                       </span>
-                      <span className="flex items-center gap-2">
+                      <span className="flex flex-wrap items-center gap-2">
+                        {recipient.status === "verified" ? (
+                          <label className="inline-flex min-h-9 items-center gap-2 border border-line px-3 text-xs font-extrabold text-ink">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 accent-[#3346d3]"
+                              checked={recipient.includeInGlobalForwarding !== false}
+                              disabled={isBusy}
+                              onChange={(event) => toggleRecipientPrimaryForwarding(recipient, event.currentTarget.checked)}
+                            />
+                            Primary mail
+                          </label>
+                        ) : null}
                         <button className="grid h-9 w-9 place-items-center border border-line text-ink hover:border-cta hover:text-cta" type="button" onClick={() => copyText(recipient.email)} aria-label={copiedValue === recipient.email ? "Copied recipient" : "Copy recipient"} title={copiedValue === recipient.email ? "Copied" : "Copy"}>
                           {copiedValue === recipient.email ? <CheckIcon className="h-4 w-4 text-cta" /> : <CopyIcon className="h-4 w-4" />}
                         </button>
@@ -392,7 +424,7 @@ export function AliasesPanel() {
 
                       <div className="grid grid-cols-[minmax(180px,0.45fr)_1fr] gap-3 max-md:grid-cols-1">
                         <label className="label text-xs">Label<input className="field min-h-10" name="label" defaultValue={alias.label || ""} placeholder="Alias label" /></label>
-                        <label className="label text-xs">Forward recipients<textarea className="min-h-20 border border-line bg-white px-3 py-3 text-sm outline-none focus:border-cta" name="forwardTo" defaultValue={alias.forwardTo.join(", ")} placeholder="Forward recipients" /></label>
+                        <label className="label text-xs">Forward recipients<textarea className="min-h-20 border border-line bg-white px-3 py-3 text-sm outline-none focus:border-cta" name="forwardTo" defaultValue={alias.forwardTo.join(", ")} placeholder={verifiedForwardingEmails.length ? "Verified forwarding recipients" : "Verify a global recipient first"} /></label>
                       </div>
 
                       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">

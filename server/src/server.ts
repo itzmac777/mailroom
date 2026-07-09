@@ -38,6 +38,7 @@ type ForwardingRecipient = {
   id: string;
   email: string;
   status: "pending" | "verified";
+  includeInGlobalForwarding?: boolean;
   createdAt: string;
   verifiedAt?: string;
   disabledAt?: string;
@@ -759,6 +760,7 @@ async function readDb(): Promise<Db> {
     }
     for (const recipient of mailbox.forwardTo) {
       recipient.status ||= recipient.verifiedAt ? "verified" : "pending";
+      recipient.includeInGlobalForwarding ??= true;
     }
   }
   return db;
@@ -837,6 +839,12 @@ function verifiedForwardingDestinations(mailbox: Mailbox): string[] {
     .map((recipient) => recipient.email.toLowerCase())));
 }
 
+function primaryForwardingDestinations(mailbox: Mailbox): string[] {
+  return Array.from(new Set((mailbox.forwardTo || [])
+    .filter((recipient) => recipient.status === "verified" && !recipient.disabledAt && recipient.includeInGlobalForwarding !== false)
+    .map((recipient) => recipient.email.toLowerCase())));
+}
+
 function forwardingRecipientLimitReached(mailbox: Mailbox): boolean {
   return (mailbox.forwardTo || []).filter((recipient) => !recipient.disabledAt).length >= FORWARDING_RECIPIENT_LIMIT;
 }
@@ -893,14 +901,17 @@ function normalizeTempInboxResponse(value: any, fallbackEmail: string, fallbackF
   };
 }
 
-function parseForwardTo(value: unknown, ownerEmail: string): { forwardTo: string[]; error?: string } {
+function parseForwardTo(value: unknown, mailbox: Mailbox): { forwardTo: string[]; error?: string } {
   const raw = Array.isArray(value) ? value.join(",") : String(value || "");
   const items = raw.split(/[;,\n]/).map((item) => item.trim().toLowerCase()).filter(Boolean);
   const forwardTo = Array.from(new Set(items));
   const invalid = forwardTo.find((item) => !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(item));
   if (invalid) return { forwardTo: [], error: `Invalid forwarding address: ${invalid}` };
-  if (forwardTo.includes(ownerEmail.toLowerCase())) return { forwardTo: [], error: "Forwarding to the primary mailbox is already included." };
+  if (forwardTo.includes(mailbox.email.toLowerCase())) return { forwardTo: [], error: "Forwarding to the primary mailbox is already included." };
   if (forwardTo.length > ALIAS_FORWARD_LIMIT) return { forwardTo: [], error: `Use ${ALIAS_FORWARD_LIMIT} forwarding recipients or fewer.` };
+  const verified = new Set(verifiedForwardingDestinations(mailbox));
+  const unverified = forwardTo.find((item) => !verified.has(item));
+  if (unverified) return { forwardTo: [], error: `Verify ${unverified} as a global forwarding recipient before using it on an alias.` };
   return { forwardTo };
 }
 
@@ -917,8 +928,107 @@ function getAlias(mailbox: Mailbox, id: string): MailAlias | undefined {
   return (mailbox.aliases || []).find((alias) => alias.id === id);
 }
 
-function aliasDestinations(mailbox: Mailbox, alias: MailAlias): string[] {
-  return Array.from(new Set([mailbox.email.toLowerCase(), ...(alias.forwardTo || []).map((item) => item.toLowerCase())]));
+function aliasForwardRelayLocal(mailbox: Mailbox, recipientEmail: string): string {
+  return `af-${hmac(`alias-forward-relay:${mailbox.email.toLowerCase()}:${recipientEmail.toLowerCase()}`).slice(0, 24)}`;
+}
+
+function aliasForwardRelayEmail(mailbox: Mailbox, recipientEmail: string): string {
+  return `${aliasForwardRelayLocal(mailbox, recipientEmail)}@${MAIL_DOMAIN}`;
+}
+
+async function createMailuUser(local: string, password: string, displayName: string, quotaMb: number, comment: string): Promise<MailuCreateResult> {
+  if (MAILU_DRY_RUN) {
+    return {
+      provider: "dry-run",
+      message: "MAILU_DRY_RUN is enabled; no Mailu user call was made."
+    };
+  }
+
+  const base = env.MAILU_API_BASE;
+  const token = env.MAILU_API_TOKEN;
+  const endpoint = env.MAILU_CREATE_USER_ENDPOINT || "/api/v1/user";
+
+  if (!base || !token) {
+    throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
+  }
+
+  const response = await fetch(new URL(endpoint, base).toString(), {
+    method: "POST",
+    signal: AbortSignal.timeout(15_000),
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+      "x-api-key": token
+    },
+    body: JSON.stringify({
+      localpart: local,
+      domain: MAIL_DOMAIN,
+      email: `${local}@${MAIL_DOMAIN}`,
+      raw_password: password,
+      display_name: displayName,
+      quota_bytes: quotaMb * 1024 * 1024,
+      enabled: true,
+      comment
+    })
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Mailu API failed with ${response.status}: ${text.slice(0, 300)}`);
+  }
+
+  return {
+    provider: "mailu",
+    status: response.status,
+    body: text ? safeJson(text) : null
+  };
+}
+
+async function ensureMailuAliasForwardRelay(mailbox: Mailbox, recipientEmail: string): Promise<MailuCreateResult & { email: string }> {
+  const local = aliasForwardRelayLocal(mailbox, recipientEmail);
+  const email = `${local}@${MAIL_DOMAIN}`;
+  if (MAILU_DRY_RUN) {
+    return {
+      provider: "dry-run",
+      message: "MAILU_DRY_RUN is enabled; no Mailu alias-forward relay calls were made.",
+      body: { email, forwardsTo: recipientEmail },
+      email
+    };
+  }
+
+  try {
+    await createMailuUser(
+      local,
+      `${randomToken(18)}Aa1`,
+      `Alias forward relay for ${mailbox.email}`,
+      1,
+      `Created by Mailroom alias forwarding for ${mailbox.email}`
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/\b(409|already exists|duplicate)\b/i.test(message)) throw error;
+  }
+
+  const forwardingResult = await syncMailuUserForwarding(email, [recipientEmail.toLowerCase()], true, false);
+  return {
+    ...forwardingResult,
+    body: { relay: email, forwardsTo: recipientEmail, provider: forwardingResult.body },
+    email
+  };
+}
+
+async function aliasDestinations(mailbox: Mailbox, alias: MailAlias): Promise<{ destinations: string[]; relayResults: MailuCreateResult[] }> {
+  const relayResults: MailuCreateResult[] = [];
+  const relayEmails: string[] = [];
+  for (const recipient of alias.forwardTo || []) {
+    const result = await ensureMailuAliasForwardRelay(mailbox, recipient);
+    relayResults.push(result);
+    relayEmails.push(result.email);
+  }
+  return {
+    destinations: Array.from(new Set([mailbox.email.toLowerCase(), ...relayEmails.map((item) => item.toLowerCase())])),
+    relayResults
+  };
 }
 
 function detectDeliveredAlias(to: string | undefined, aliases: MailAlias[] = []): PublicMailAlias | undefined {
@@ -1019,6 +1129,7 @@ async function upsertMailuAlias(mailbox: Mailbox, alias: MailAlias, enabled = tr
   const base = env.MAILU_API_BASE;
   const token = env.MAILU_API_TOKEN;
   if (!base || !token) throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
+  const { destinations, relayResults } = await aliasDestinations(mailbox, alias);
   const response = await fetch(new URL(MAILU_ALIAS_ENDPOINT, base).toString(), {
     method: "POST",
     signal: AbortSignal.timeout(15_000),
@@ -1031,26 +1142,24 @@ async function upsertMailuAlias(mailbox: Mailbox, alias: MailAlias, enabled = tr
       localpart: alias.local,
       domain: MAIL_DOMAIN,
       email: alias.email,
-      destination: aliasDestinations(mailbox, alias),
+      destination: destinations,
       enabled,
       comment: "Created by Mailroom alias controls"
     })
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`Mailu alias API failed with ${response.status}: ${text.slice(0, 300)}`);
-  return { provider: "mailu", status: response.status, body: text ? safeJson(text) : null };
+  return { provider: "mailu", status: response.status, body: { alias: text ? safeJson(text) : null, destinations, relays: relayResults } };
 }
 
-async function syncMailuForwarding(mailbox: Mailbox): Promise<MailuCreateResult> {
-  const destinations = verifiedForwardingDestinations(mailbox);
-  const enabled = Boolean(mailbox.forwardingEnabled && destinations.length);
-  if (MAILU_DRY_RUN) return { provider: "dry-run", message: "MAILU_DRY_RUN is enabled; no Mailu forwarding call was made.", body: { enabled, destinations, keepCopy: true } };
+async function syncMailuUserForwarding(email: string, destinations: string[], enabled: boolean, keepCopy: boolean): Promise<MailuCreateResult> {
+  if (MAILU_DRY_RUN) return { provider: "dry-run", message: "MAILU_DRY_RUN is enabled; no Mailu forwarding call was made.", body: { enabled, destinations, keepCopy } };
   const base = env.MAILU_API_BASE;
   const token = env.MAILU_API_TOKEN;
   if (!base || !token) throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
   const endpoint = MAILU_FORWARDING_ENDPOINT.endsWith("/")
-    ? `${MAILU_FORWARDING_ENDPOINT}${encodeURIComponent(mailbox.email)}`
-    : `${MAILU_FORWARDING_ENDPOINT}/${encodeURIComponent(mailbox.email)}`;
+    ? `${MAILU_FORWARDING_ENDPOINT}${encodeURIComponent(email)}`
+    : `${MAILU_FORWARDING_ENDPOINT}/${encodeURIComponent(email)}`;
   const response = await fetch(new URL(endpoint, base).toString(), {
     method: "PATCH",
     signal: AbortSignal.timeout(15_000),
@@ -1060,16 +1169,22 @@ async function syncMailuForwarding(mailbox: Mailbox): Promise<MailuCreateResult>
       "x-api-key": token
     },
     body: JSON.stringify({
-      email: mailbox.email,
+      email,
       forward_enabled: enabled,
       forward_destination: destinations,
-      forward_keep: true,
-      keep: true
+      forward_keep: keepCopy,
+      keep: keepCopy
     })
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`Mailu forwarding API failed with ${response.status}: ${text.slice(0, 300)}`);
   return { provider: "mailu", status: response.status, body: text ? safeJson(text) : null };
+}
+
+async function syncMailuForwarding(mailbox: Mailbox): Promise<MailuCreateResult> {
+  const destinations = primaryForwardingDestinations(mailbox);
+  const enabled = Boolean(mailbox.forwardingEnabled && destinations.length);
+  return syncMailuUserForwarding(mailbox.email, destinations, enabled, true);
 }
 
 async function fetchExternalTempInbox(account: TempInboxAccount, folder: string, keyword: string, maxCount: number) {
@@ -1637,6 +1752,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       id: randomToken(10),
       email: parsed.email,
       status: "pending",
+      includeInGlobalForwarding: true,
       createdAt: nowIso()
     };
     const code = newForwardingCode(session.mailbox, recipient);
@@ -1708,17 +1824,61 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return json(res, 502, { error: error instanceof Error ? error.message : "Could not resend verification email." });
     }
   }
+  if (forwardingRecipientRoute && req.method === "PATCH" && !forwardingRecipientRoute[2]) {
+    const session = await getSession(req, db);
+    if (!session) return json(res, 401, { error: "Not signed in." });
+    if (session.mailbox.kind === "temporary") return json(res, 403, { error: "Temporary mailboxes cannot use forwarding." });
+    const recipient = getForwardingRecipient(session.mailbox, decodeURIComponent(forwardingRecipientRoute[1]));
+    if (!recipient || recipient.disabledAt) return json(res, 404, { error: "Forwarding recipient not found." });
+    if (recipient.status !== "verified") return json(res, 400, { error: "Verify this recipient before changing primary mail forwarding." });
+    const body = await parseBody(req);
+    if (typeof body.includeInGlobalForwarding !== "boolean") return json(res, 400, { error: "includeInGlobalForwarding must be true or false." });
+    const previousInclude = recipient.includeInGlobalForwarding;
+    const previousForwardingEnabled = session.mailbox.forwardingEnabled;
+    recipient.includeInGlobalForwarding = body.includeInGlobalForwarding;
+    if (!primaryForwardingDestinations(session.mailbox).length) session.mailbox.forwardingEnabled = false;
+    try {
+      session.mailbox.forwardingProviderResult = await syncMailuForwarding(session.mailbox);
+      await audit(db, session.mailbox.email, "forwarding_recipient_updated", {
+        recipient: recipient.email,
+        includeInGlobalForwarding: recipient.includeInGlobalForwarding,
+        forwardingEnabled: Boolean(session.mailbox.forwardingEnabled),
+        dryRun: MAILU_DRY_RUN
+      });
+      await writeDb(db);
+      return json(res, 200, {
+        recipient: publicForwardingRecipient(recipient),
+        recipients: (session.mailbox.forwardTo || []).map(publicForwardingRecipient),
+        enabled: Boolean(session.mailbox.forwardingEnabled),
+        providerResult: session.mailbox.forwardingProviderResult
+      });
+    } catch (error) {
+      recipient.includeInGlobalForwarding = previousInclude;
+      session.mailbox.forwardingEnabled = previousForwardingEnabled;
+      await audit(db, session.mailbox.email, "forwarding_provider_sync_failed", { recipient: recipient.email, message: error instanceof Error ? error.message : String(error) });
+      await writeDb(db);
+      return json(res, 424, { error: error instanceof Error ? error.message : "Forwarding provider sync failed." });
+    }
+  }
   if (forwardingRecipientRoute && req.method === "DELETE" && !forwardingRecipientRoute[2]) {
     const session = await getSession(req, db);
     if (!session) return json(res, 401, { error: "Not signed in." });
     const recipient = getForwardingRecipient(session.mailbox, decodeURIComponent(forwardingRecipientRoute[1]));
     if (!recipient) return json(res, 404, { error: "Forwarding recipient not found." });
     const removedEmail = recipient.email;
+    const affectedAliases = (session.mailbox.aliases || []).filter((alias) => (alias.forwardTo || []).some((item) => item.toLowerCase() === removedEmail.toLowerCase()));
+    for (const alias of affectedAliases) {
+      alias.forwardTo = (alias.forwardTo || []).filter((item) => item.toLowerCase() !== removedEmail.toLowerCase());
+    }
     session.mailbox.forwardTo = (session.mailbox.forwardTo || []).filter((item) => item.id !== recipient.id);
-    if (!verifiedForwardingDestinations(session.mailbox).length) session.mailbox.forwardingEnabled = false;
+    if (!primaryForwardingDestinations(session.mailbox).length) session.mailbox.forwardingEnabled = false;
     try {
       session.mailbox.forwardingProviderResult = await syncMailuForwarding(session.mailbox);
-      await audit(db, session.mailbox.email, "forwarding_recipient_deleted", { recipient: removedEmail, dryRun: MAILU_DRY_RUN });
+      for (const alias of affectedAliases) {
+        alias.providerResult = await upsertMailuAlias(session.mailbox, alias, alias.status === "active");
+      }
+      await deleteMailuMailbox(aliasForwardRelayEmail(session.mailbox, removedEmail));
+      await audit(db, session.mailbox.email, "forwarding_recipient_deleted", { recipient: removedEmail, aliasesUpdated: affectedAliases.map((alias) => alias.email), dryRun: MAILU_DRY_RUN });
       await writeDb(db);
       return json(res, 200, { deleted: true, recipients: (session.mailbox.forwardTo || []).map(publicForwardingRecipient), enabled: Boolean(session.mailbox.forwardingEnabled), providerResult: session.mailbox.forwardingProviderResult });
     } catch (error) {
@@ -1733,11 +1893,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (session.mailbox.kind === "temporary") return json(res, 403, { error: "Temporary mailboxes cannot use forwarding." });
     const body = await parseBody(req);
     const enabled = Boolean(body.enabled);
-    if (enabled && !verifiedForwardingDestinations(session.mailbox).length) return json(res, 400, { error: "Verify at least one forwarding recipient before enabling forwarding." });
+    if (enabled && !primaryForwardingDestinations(session.mailbox).length) return json(res, 400, { error: "Enable primary mail on at least one verified recipient before turning global forwarding on." });
     session.mailbox.forwardingEnabled = enabled;
     try {
       session.mailbox.forwardingProviderResult = await syncMailuForwarding(session.mailbox);
-      await audit(db, session.mailbox.email, "forwarding_updated", { enabled, destinations: verifiedForwardingDestinations(session.mailbox), dryRun: MAILU_DRY_RUN });
+      await audit(db, session.mailbox.email, "forwarding_updated", { enabled, destinations: primaryForwardingDestinations(session.mailbox), dryRun: MAILU_DRY_RUN });
       await writeDb(db);
       return json(res, 200, {
         enabled: Boolean(session.mailbox.forwardingEnabled),
@@ -1768,7 +1928,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const local = normalizeLocal(body.local);
     const email = `${local}@${MAIL_DOMAIN}`;
     const localError = validateLocal(local);
-    const parsedForwards = parseForwardTo(body.forwardTo, session.mailbox.email);
+    const parsedForwards = parseForwardTo(body.forwardTo, session.mailbox);
     if (localError) return json(res, 400, { error: localError });
     if (parsedForwards.error) return json(res, 400, { error: parsedForwards.error });
     if (aliasEmailExists(db, email)) return json(res, 409, { error: "That address already exists." });
@@ -1804,9 +1964,15 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (!alias) return json(res, 404, { error: "Alias not found." });
     const body = await parseBody(req);
     const previousForwardTo = [...(alias.forwardTo || [])];
+    const previousAlias = {
+      label: alias.label,
+      forwardTo: [...(alias.forwardTo || [])],
+      status: alias.status,
+      disabledAt: alias.disabledAt
+    };
     if (body.label !== undefined) alias.label = String(body.label || "").trim().slice(0, 60);
     if (body.forwardTo !== undefined) {
-      const parsedForwards = parseForwardTo(body.forwardTo, session.mailbox.email);
+      const parsedForwards = parseForwardTo(body.forwardTo, session.mailbox);
       if (parsedForwards.error) return json(res, 400, { error: parsedForwards.error });
       alias.forwardTo = parsedForwards.forwardTo;
     }
@@ -1822,6 +1988,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       await writeDb(db);
       return json(res, 200, { alias: publicAlias(alias), aliases: (session.mailbox.aliases || []).map(publicAlias) });
     } catch (error) {
+      alias.label = previousAlias.label;
+      alias.forwardTo = previousAlias.forwardTo;
+      alias.status = previousAlias.status;
+      if (previousAlias.disabledAt) alias.disabledAt = previousAlias.disabledAt;
+      else delete alias.disabledAt;
       await audit(db, session.mailbox.email, "alias_provider_update_failed", { alias: alias.email, message: error instanceof Error ? error.message : String(error) });
       await writeDb(db);
       return json(res, 424, { error: error instanceof Error ? error.message : "Alias provider update failed." });
@@ -1833,9 +2004,14 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (!session) return json(res, 401, { error: "Not signed in." });
     const alias = getAlias(session.mailbox, decodeURIComponent(aliasRoute[1]));
     if (!alias) return json(res, 404, { error: "Alias not found." });
+    const removedForwardTo = [...(alias.forwardTo || [])];
     try {
       await deleteMailuAlias(alias);
       session.mailbox.aliases = (session.mailbox.aliases || []).filter((item) => item.id !== alias.id);
+      for (const recipientEmail of removedForwardTo) {
+        const stillUsed = (session.mailbox.aliases || []).some((item) => (item.forwardTo || []).some((recipient) => recipient.toLowerCase() === recipientEmail.toLowerCase()));
+        if (!stillUsed) await deleteMailuMailbox(aliasForwardRelayEmail(session.mailbox, recipientEmail));
+      }
       await audit(db, session.mailbox.email, "alias_deleted", { alias: alias.email, dryRun: MAILU_DRY_RUN });
       await writeDb(db);
       return json(res, 200, { deleted: true, aliases: (session.mailbox.aliases || []).map(publicAlias) });
