@@ -231,14 +231,14 @@ export function TempInboxAccessPanel() {
     const timer = window.setInterval(() => {
       if (autoFetchInFlight.current) return;
       autoFetchInFlight.current = true;
-      fetchMailbox(selectedAccount.id, { forward: true, silent: true })
+      loadAccounts(true)
         .catch(() => undefined)
         .finally(() => {
           autoFetchInFlight.current = false;
         });
     }, forwarding.intervalSeconds * 1000);
     return () => window.clearInterval(timer);
-  }, [selectedAccount?.id, selectedAccount?.forwarding?.enabled, selectedAccount?.forwarding?.intervalSeconds, selectedAccount?.forwarding?.recipients?.join(","), folder, keyword, maxCount]);
+  }, [selectedAccount?.id, selectedAccount?.forwarding?.enabled, selectedAccount?.forwarding?.intervalSeconds, selectedAccount?.forwarding?.recipients?.join(",")]);
 
   async function copyText(value: string) {
     try {
@@ -308,7 +308,7 @@ export function TempInboxAccessPanel() {
       });
       setAccounts(result.accounts);
       if (result.forwardSender) setForwardSender(result.forwardSender);
-      setMessage(forwardEnabled ? "Auto forwarding saved." : "Auto forwarding off.");
+      setMessage(forwardEnabled ? "Background auto forwarding saved." : "Auto forwarding off.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not save forwarding.");
     } finally {

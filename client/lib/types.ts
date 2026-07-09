@@ -101,6 +101,7 @@ export type TempInboxAccount = {
     enabled: boolean;
     recipients: string[];
     intervalSeconds: 10 | 20 | 30;
+    lastForwardCheckAt?: string;
     lastForwardedAt?: string;
     lastForwardedCount?: number;
     lastForwardError?: string;
