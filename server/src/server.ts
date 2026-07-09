@@ -136,6 +136,7 @@ type PublicTempInboxForwardingConfig = Omit<TempInboxForwardingConfig, "forwarde
 
 type PublicTempInboxAccount = Omit<TempInboxAccount, "encPassword" | "forwarding"> & {
   forwarding?: PublicTempInboxForwardingConfig;
+  forwardSender?: PublicTempInboxForwardSender;
 };
 
 type NormalizedTempInboxMessage = {
@@ -157,6 +158,15 @@ type NormalizedTempInboxResult = {
   count: number;
   messages: NormalizedTempInboxMessage[];
 };
+
+type TempInboxForwardSender = {
+  email?: string;
+  source: "dashboard" | "env" | "account" | "none";
+  password?: string;
+  error?: string;
+};
+
+type PublicTempInboxForwardSender = Omit<TempInboxForwardSender, "password">;
 
 type TempInboxSessionRecord = {
   createdAt: string;
@@ -917,11 +927,12 @@ function validateEmail(value: unknown): string {
   return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) ? email : "";
 }
 
-function publicTempInboxAccount(account: TempInboxAccount): PublicTempInboxAccount {
+function publicTempInboxAccount(account: TempInboxAccount, dashboardSession?: AuthSession | null): PublicTempInboxAccount {
   const { encPassword, forwarding, ...publicFields } = account;
-  if (!forwarding) return publicFields;
+  const forwardSender = publicTempInboxForwardSender(tempInboxForwardSender(account, dashboardSession, false));
+  if (!forwarding) return { ...publicFields, forwardSender };
   const { forwardedMessageIds, ...publicForwarding } = forwarding;
-  return { ...publicFields, forwarding: publicForwarding };
+  return { ...publicFields, forwarding: publicForwarding, forwardSender };
 }
 
 function normalizeTempInboxMessage(value: any): NormalizedTempInboxMessage {
@@ -1285,17 +1296,28 @@ function tempInboxForwardBody(account: TempInboxAccount, message: NormalizedTemp
   return lines.filter((line) => line !== undefined).join("\n");
 }
 
-function tempInboxForwardSender(account: TempInboxAccount): { email: string; password: string } {
+function tempInboxForwardSender(account: TempInboxAccount, dashboardSession?: AuthSession | null, includePassword = true): TempInboxForwardSender {
+  if (dashboardSession?.mailbox?.email && dashboardSession.encPassword) {
+    return { email: dashboardSession.mailbox.email, password: includePassword ? decrypt(dashboardSession.encPassword) : undefined, source: "dashboard" };
+  }
+  if (dashboardSession?.mailbox?.email && !dashboardSession.encPassword) {
+    return { email: dashboardSession.mailbox.email, source: "none", error: "Please log in again so this mailbox can send forwarded mail." };
+  }
   if (TEMP_INBOX_FORWARD_FROM_EMAIL || TEMP_INBOX_FORWARD_FROM_PASSWORD) {
     if (!TEMP_INBOX_FORWARD_FROM_EMAIL || !TEMP_INBOX_FORWARD_FROM_PASSWORD) {
-      throw new Error("Temp inbox forwarding sender is incomplete. Set both TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD.");
+      return { source: "none", error: "Temp inbox forwarding sender is incomplete. Set both TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD." };
     }
-    return { email: TEMP_INBOX_FORWARD_FROM_EMAIL, password: TEMP_INBOX_FORWARD_FROM_PASSWORD };
+    return { email: TEMP_INBOX_FORWARD_FROM_EMAIL, password: includePassword ? TEMP_INBOX_FORWARD_FROM_PASSWORD : undefined, source: "env" };
   }
   if (account.email.toLowerCase().endsWith(`@${MAIL_DOMAIN}`)) {
-    return { email: account.email, password: decrypt(account.encPassword) };
+    return { email: account.email, password: includePassword ? decrypt(account.encPassword) : undefined, source: "account" };
   }
-  throw new Error(`Temp inbox forwarding needs a Mailu sender. Set TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD to a mailbox on ${MAIL_DOMAIN}.`);
+  return { source: "none", error: `Log in to your ${MAIL_DOMAIN} mailbox or set TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD to a Mailu sender.` };
+}
+
+function publicTempInboxForwardSender(sender: TempInboxForwardSender): PublicTempInboxForwardSender {
+  const { password, ...publicSender } = sender;
+  return publicSender;
 }
 
 function latestTempInboxMessage(messages: NormalizedTempInboxMessage[]): NormalizedTempInboxMessage | undefined {
@@ -1308,14 +1330,22 @@ function latestTempInboxMessage(messages: NormalizedTempInboxMessage[]): Normali
   return dated[0]?.message;
 }
 
-async function forwardTempInboxMessages(account: TempInboxAccount, messages: NormalizedTempInboxMessage[]): Promise<{ forwarded: number; skipped: number; recipients: string[]; errors: string[] }> {
+async function forwardTempInboxMessages(account: TempInboxAccount, messages: NormalizedTempInboxMessage[], dashboardSession?: AuthSession | null): Promise<{ forwarded: number; skipped: number; recipients: string[]; errors: string[]; sender: PublicTempInboxForwardSender }> {
   const forwarding = account.forwarding;
   const recipients = normalizeRecipients(forwarding?.recipients || []);
-  if (!forwarding?.enabled || !recipients.length) return { forwarded: 0, skipped: messages.length, recipients: [], errors: [] };
+  const sender = tempInboxForwardSender(account, dashboardSession);
+  const publicSender = publicTempInboxForwardSender(sender);
+  if (!forwarding?.enabled || !recipients.length) return { forwarded: 0, skipped: messages.length, recipients: [], errors: [], sender: publicSender };
+  if (!sender.email || !sender.password) {
+    const error = sender.error || "Temp inbox forwarding sender is not available.";
+    forwarding.lastForwardedAt = nowIso();
+    forwarding.lastForwardedCount = 0;
+    forwarding.lastForwardError = error;
+    return { forwarded: 0, skipped: messages.length, recipients, errors: [error], sender: publicSender };
+  }
 
   forwarding.forwardedMessageIds ||= [];
   const seen = new Set(forwarding.forwardedMessageIds);
-  const sender = tempInboxForwardSender(account);
   const errors: string[] = [];
   const message = latestTempInboxMessage(messages);
   let forwarded = 0;
@@ -1345,7 +1375,7 @@ async function forwardTempInboxMessages(account: TempInboxAccount, messages: Nor
   forwarding.lastForwardedCount = forwarded;
   if (errors.length) forwarding.lastForwardError = errors[0];
   else delete forwarding.lastForwardError;
-  return { forwarded, skipped: message && forwarded === 0 ? 1 : 0, recipients, errors };
+  return { forwarded, skipped: message && forwarded === 0 ? 1 : 0, recipients, errors, sender: publicSender };
 }
 
 async function deleteMailuAlias(alias: MailAlias): Promise<MailuCreateResult> {
@@ -2272,8 +2302,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
   if (req.method === "GET" && url.pathname === "/api/temp-inbox/accounts") {
     const tempInbox = getOrCreateTempInboxSession(req, res, db);
+    const dashboardSession = await getSession(req, db);
     await writeDb(db);
-    return json(res, 200, { accounts: tempInbox.session.accounts.map(publicTempInboxAccount) });
+    return json(res, 200, {
+      accounts: tempInbox.session.accounts.map((account) => publicTempInboxAccount(account, dashboardSession)),
+      forwardSender: publicTempInboxForwardSender(tempInboxForwardSender(tempInbox.session.accounts[0] || { id: "", email: "", encPassword: "", createdAt: nowIso() }, dashboardSession, false))
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/api/temp-inbox/accounts") {
@@ -2300,7 +2334,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       });
     }
     await writeDb(db);
-    return json(res, 201, { accounts: tempInbox.session.accounts.map(publicTempInboxAccount) });
+    const dashboardSession = await getSession(req, db);
+    return json(res, 201, {
+      accounts: tempInbox.session.accounts.map((account) => publicTempInboxAccount(account, dashboardSession)),
+      forwardSender: publicTempInboxForwardSender(tempInboxForwardSender(tempInbox.session.accounts[0] || { id: "", email: "", encPassword: "", createdAt: nowIso() }, dashboardSession, false))
+    });
   }
 
   const tempInboxAccountRoute = url.pathname.match(/^\/api\/temp-inbox\/accounts\/([^/]+)$/);
@@ -2310,16 +2348,14 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const account = tempInbox.session.accounts.find((item) => item.id === id);
     if (!account) return json(res, 404, { error: "Mailbox account not found." });
     const body = await parseBody(req);
+    const dashboardSession = await getSession(req, db);
     const recipients = normalizeRecipients(body.forwardRecipients);
     const intervalSeconds = normalizeTempInboxForwardInterval(body.forwardIntervalSeconds);
     const enabled = Boolean(body.forwardEnabled);
     if (enabled && !recipients.length) return json(res, 400, { error: "Add at least one forwarding recipient before enabling auto forward." });
     if (enabled) {
-      try {
-        tempInboxForwardSender(account);
-      } catch (error) {
-        return json(res, 400, { error: error instanceof Error ? error.message : "Temp inbox forwarding sender is not configured." });
-      }
+      const sender = tempInboxForwardSender(account, dashboardSession);
+      if (!sender.email || !sender.password) return json(res, 400, { error: sender.error || "Temp inbox forwarding sender is not configured.", forwardSender: publicTempInboxForwardSender(sender) });
     }
     account.forwarding ||= { enabled: false, recipients: [], intervalSeconds: 20, forwardedMessageIds: [] };
     account.forwarding.enabled = enabled;
@@ -2328,15 +2364,20 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     account.forwarding.forwardedMessageIds ||= [];
     if (!enabled) delete account.forwarding.lastForwardError;
     await writeDb(db);
-    return json(res, 200, { account: publicTempInboxAccount(account), accounts: tempInbox.session.accounts.map(publicTempInboxAccount) });
+    return json(res, 200, {
+      account: publicTempInboxAccount(account, dashboardSession),
+      accounts: tempInbox.session.accounts.map((item) => publicTempInboxAccount(item, dashboardSession)),
+      forwardSender: publicTempInboxForwardSender(tempInboxForwardSender(account, dashboardSession, false))
+    });
   }
 
   if (tempInboxAccountRoute && req.method === "DELETE") {
     const tempInbox = getOrCreateTempInboxSession(req, res, db);
+    const dashboardSession = await getSession(req, db);
     const id = decodeURIComponent(tempInboxAccountRoute[1]);
     tempInbox.session.accounts = tempInbox.session.accounts.filter((account) => account.id !== id);
     await writeDb(db);
-    return json(res, 200, { deleted: true, accounts: tempInbox.session.accounts.map(publicTempInboxAccount) });
+    return json(res, 200, { deleted: true, accounts: tempInbox.session.accounts.map((account) => publicTempInboxAccount(account, dashboardSession)) });
   }
 
   if (req.method === "POST" && url.pathname === "/api/temp-inbox/fetch") {
@@ -2372,9 +2413,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     try {
       const result = await fetchExternalTempInbox(account, folder, keyword, maxCount);
       account.lastFetchedAt = nowIso();
-      const forwarding = await forwardTempInboxMessages(account, result.messages);
+      const dashboardSession = await getSession(req, db);
+      const forwarding = await forwardTempInboxMessages(account, result.messages, dashboardSession);
       await writeDb(db);
-      return json(res, 200, { ...result, forwarding, account: publicTempInboxAccount(account) });
+      return json(res, 200, { ...result, forwarding, account: publicTempInboxAccount(account, dashboardSession), forwardSender: forwarding.sender });
     } catch (error) {
       return json(res, 502, { error: error instanceof Error ? error.message : "Mailbox fetch and forward failed." });
     }

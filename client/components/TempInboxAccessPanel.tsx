@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import type { TempInboxAccount, TempInboxFetchResult, TempInboxMessage } from "@/lib/types";
+import type { TempInboxAccount, TempInboxFetchResult, TempInboxForwardSender, TempInboxMessage } from "@/lib/types";
 
 type IconProps = {
   className?: string;
@@ -160,6 +160,13 @@ function emailBodySrcDoc(message: TempInboxMessage) {
   `;
 }
 
+function forwardingSenderText(sender: TempInboxForwardSender) {
+  if (sender.source === "dashboard" && sender.email) return `Forwarding from ${sender.email}`;
+  if (sender.source === "env" && sender.email) return `Forwarding from configured sender ${sender.email}`;
+  if (sender.source === "account" && sender.email) return `Forwarding from ${sender.email}`;
+  return sender.error || "Log in to your mailbox or configure a forwarding sender.";
+}
+
 export function TempInboxAccessPanel() {
   const [accounts, setAccounts] = useState<TempInboxAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("");
@@ -174,6 +181,7 @@ export function TempInboxAccessPanel() {
   const [forwardEnabled, setForwardEnabled] = useState(false);
   const [forwardRecipients, setForwardRecipients] = useState("");
   const [forwardIntervalSeconds, setForwardIntervalSeconds] = useState<10 | 20 | 30>(20);
+  const [forwardSender, setForwardSender] = useState<TempInboxForwardSender>({ source: "none" });
   const [message, setMessage] = useState("");
   const [copiedValue, setCopiedValue] = useState("");
   const [isControlsOpen, setIsControlsOpen] = useState(false);
@@ -184,12 +192,14 @@ export function TempInboxAccessPanel() {
   const selectedResult = selectedAccount ? resultsByAccount[selectedAccount.id] : null;
   const messages = selectedResult?.messages ?? [];
   const selectedMessage = useMemo<TempInboxMessage | null>(() => messages.find((item) => item.id === selectedMessageId) ?? messages[0] ?? null, [messages, selectedMessageId]);
+  const activeForwardSender = selectedAccount?.forwardSender || forwardSender;
 
   async function loadAccounts(silent = false) {
     if (!silent) setLoadingAccounts(true);
     try {
-      const result = await api<{ accounts: TempInboxAccount[] }>("/api/temp-inbox/accounts");
+      const result = await api<{ accounts: TempInboxAccount[]; forwardSender?: TempInboxForwardSender }>("/api/temp-inbox/accounts");
       setAccounts(result.accounts);
+      if (result.forwardSender) setForwardSender(result.forwardSender);
       setSelectedAccountId((current) => current && result.accounts.some((account) => account.id === current) ? current : result.accounts[0]?.id ?? "");
       if (!silent) setMessage("");
     } catch (error) {
@@ -246,7 +256,7 @@ export function TempInboxAccessPanel() {
     const email = String(form.get("email") || "").trim().toLowerCase();
     setMessage("Saving mailbox...");
     try {
-      const result = await api<{ accounts: TempInboxAccount[] }>("/api/temp-inbox/accounts", {
+      const result = await api<{ accounts: TempInboxAccount[]; forwardSender?: TempInboxForwardSender }>("/api/temp-inbox/accounts", {
         method: "POST",
         body: JSON.stringify({
           email,
@@ -255,6 +265,7 @@ export function TempInboxAccessPanel() {
         })
       });
       setAccounts(result.accounts);
+      if (result.forwardSender) setForwardSender(result.forwardSender);
       const selected = result.accounts.find((account) => account.email === email) ?? result.accounts[0];
       setSelectedAccountId(selected?.id ?? "");
       setMessage("Mailbox saved.");
@@ -287,7 +298,7 @@ export function TempInboxAccessPanel() {
     setSavingForwarding(true);
     setMessage("Saving forwarding...");
     try {
-      const result = await api<{ accounts: TempInboxAccount[] }>(`/api/temp-inbox/accounts/${encodeURIComponent(selectedAccount.id)}`, {
+      const result = await api<{ accounts: TempInboxAccount[]; forwardSender?: TempInboxForwardSender }>(`/api/temp-inbox/accounts/${encodeURIComponent(selectedAccount.id)}`, {
         method: "PATCH",
         body: JSON.stringify({
           forwardEnabled,
@@ -296,6 +307,7 @@ export function TempInboxAccessPanel() {
         })
       });
       setAccounts(result.accounts);
+      if (result.forwardSender) setForwardSender(result.forwardSender);
       setMessage(forwardEnabled ? "Auto forwarding saved." : "Auto forwarding off.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not save forwarding.");
@@ -322,6 +334,7 @@ export function TempInboxAccessPanel() {
       } else {
         await loadAccounts(true);
       }
+      if (result.forwardSender || result.forwarding?.sender) setForwardSender(result.forwardSender || result.forwarding?.sender || { source: "none" });
       if (!options.silent) {
         const forwarded = result.forwarding?.forwarded ? " Forwarded latest message." : result.forwarding ? " No new latest message to forward." : "";
         const failed = result.forwarding?.errors?.[0] ? ` ${result.forwarding.errors[0]}` : "";
@@ -430,6 +443,7 @@ export function TempInboxAccessPanel() {
               Forward to
               <textarea className="min-h-20 border border-line bg-white px-3 py-3 text-sm outline-none focus:border-cta" value={forwardRecipients} onChange={(event) => setForwardRecipients(event.target.value)} placeholder="name@example.com, team@example.com" />
             </label>
+            <p className={`text-xs font-bold leading-5 ${activeForwardSender.source === "none" ? "text-red-700" : "text-muted"}`}>{forwardingSenderText(activeForwardSender)}</p>
             <button className="button button-secondary min-h-[42px]" type="submit" disabled={savingForwarding}>{savingForwarding ? "Saving..." : "Save forwarding"}</button>
             {selectedAccount.forwarding?.lastForwardedAt ? (
               <p className="text-xs font-bold leading-5 text-muted">
