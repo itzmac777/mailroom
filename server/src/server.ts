@@ -385,6 +385,15 @@ function decrypt(text: string): string {
   return decrypted.toString("utf8");
 }
 
+function decryptOrNull(text?: string): string | null {
+  if (!text) return null;
+  try {
+    return decrypt(text);
+  } catch {
+    return null;
+  }
+}
+
 const MOCK_EMAILS = [
   {
     uid: "1",
@@ -1296,28 +1305,63 @@ function tempInboxForwardBody(account: TempInboxAccount, message: NormalizedTemp
   return lines.filter((line) => line !== undefined).join("\n");
 }
 
-function tempInboxForwardSender(account: TempInboxAccount, dashboardSession?: AuthSession | null, includePassword = true): TempInboxForwardSender {
+function tempInboxForwardSenderCandidates(account: TempInboxAccount, dashboardSession?: AuthSession | null, includePassword = true): TempInboxForwardSender[] {
+  const senders: TempInboxForwardSender[] = [];
   if (dashboardSession?.mailbox?.email && dashboardSession.encPassword) {
-    return { email: dashboardSession.mailbox.email, password: includePassword ? decrypt(dashboardSession.encPassword) : undefined, source: "dashboard" };
-  }
-  if (dashboardSession?.mailbox?.email && !dashboardSession.encPassword) {
-    return { email: dashboardSession.mailbox.email, source: "none", error: "Please log in again so this mailbox can send forwarded mail." };
+    const password = includePassword ? decryptOrNull(dashboardSession.encPassword) : undefined;
+    senders.push({
+      email: dashboardSession.mailbox.email,
+      password,
+      source: password || !includePassword ? "dashboard" : "none",
+      error: password || !includePassword ? undefined : "Please log in again so this mailbox can send forwarded mail."
+    });
+  } else if (dashboardSession?.mailbox?.email) {
+    senders.push({ email: dashboardSession.mailbox.email, source: "none", error: "Please log in again so this mailbox can send forwarded mail." });
   }
   if (TEMP_INBOX_FORWARD_FROM_EMAIL || TEMP_INBOX_FORWARD_FROM_PASSWORD) {
     if (!TEMP_INBOX_FORWARD_FROM_EMAIL || !TEMP_INBOX_FORWARD_FROM_PASSWORD) {
-      return { source: "none", error: "Temp inbox forwarding sender is incomplete. Set both TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD." };
+      senders.push({ source: "none", error: "Temp inbox forwarding sender is incomplete. Set both TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD." });
+    } else {
+      senders.push({ email: TEMP_INBOX_FORWARD_FROM_EMAIL, password: includePassword ? TEMP_INBOX_FORWARD_FROM_PASSWORD : undefined, source: "env" });
     }
-    return { email: TEMP_INBOX_FORWARD_FROM_EMAIL, password: includePassword ? TEMP_INBOX_FORWARD_FROM_PASSWORD : undefined, source: "env" };
   }
   if (account.email.toLowerCase().endsWith(`@${MAIL_DOMAIN}`)) {
-    return { email: account.email, password: includePassword ? decrypt(account.encPassword) : undefined, source: "account" };
+    const password = includePassword ? decryptOrNull(account.encPassword) : undefined;
+    senders.push({
+      email: account.email,
+      password,
+      source: password || !includePassword ? "account" : "none",
+      error: password || !includePassword ? undefined : "Saved mailbox credentials are no longer available. Save this temp inbox account again."
+    });
   }
-  return { source: "none", error: `Log in to your ${MAIL_DOMAIN} mailbox or set TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD to a Mailu sender.` };
+  return senders.length ? senders : [{ source: "none", error: `Log in to your ${MAIL_DOMAIN} mailbox or set TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD to a Mailu sender.` }];
+}
+
+function tempInboxForwardSender(account: TempInboxAccount, dashboardSession?: AuthSession | null, includePassword = true): TempInboxForwardSender {
+  const senders = tempInboxForwardSenderCandidates(account, dashboardSession, includePassword);
+  return senders.find((sender) => sender.email && (sender.password || !includePassword)) || senders[0];
 }
 
 function publicTempInboxForwardSender(sender: TempInboxForwardSender): PublicTempInboxForwardSender {
   const { password, ...publicSender } = sender;
   return publicSender;
+}
+
+function smtpAuthFailed(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /SMTP command failed \(535\)|\b535\b/.test(message);
+}
+
+function tempInboxForwardSendError(sender: TempInboxForwardSender, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!smtpAuthFailed(error)) return message;
+  const label = sender.source === "dashboard"
+    ? "dashboard mailbox"
+    : sender.source === "env"
+      ? "configured forwarding sender"
+      : "saved temp inbox sender";
+  const email = sender.email ? ` ${sender.email}` : "";
+  return `SMTP rejected the ${label}${email}. Log in again with the current mailbox password or configure a valid Mailu forwarding sender.`;
 }
 
 function latestTempInboxMessage(messages: NormalizedTempInboxMessage[]): NormalizedTempInboxMessage | undefined {
@@ -1333,11 +1377,11 @@ function latestTempInboxMessage(messages: NormalizedTempInboxMessage[]): Normali
 async function forwardTempInboxMessages(account: TempInboxAccount, messages: NormalizedTempInboxMessage[], dashboardSession?: AuthSession | null): Promise<{ forwarded: number; skipped: number; recipients: string[]; errors: string[]; sender: PublicTempInboxForwardSender }> {
   const forwarding = account.forwarding;
   const recipients = normalizeRecipients(forwarding?.recipients || []);
-  const sender = tempInboxForwardSender(account, dashboardSession);
-  const publicSender = publicTempInboxForwardSender(sender);
+  const senders = tempInboxForwardSenderCandidates(account, dashboardSession);
+  const publicSender = publicTempInboxForwardSender(tempInboxForwardSender(account, dashboardSession, false));
   if (!forwarding?.enabled || !recipients.length) return { forwarded: 0, skipped: messages.length, recipients: [], errors: [], sender: publicSender };
-  if (!sender.email || !sender.password) {
-    const error = sender.error || "Temp inbox forwarding sender is not available.";
+  if (!senders.some((sender) => sender.email && sender.password)) {
+    const error = senders.find((sender) => sender.error)?.error || "Temp inbox forwarding sender is not available.";
     forwarding.lastForwardedAt = nowIso();
     forwarding.lastForwardedCount = 0;
     forwarding.lastForwardError = error;
@@ -1353,20 +1397,30 @@ async function forwardTempInboxMessages(account: TempInboxAccount, messages: Nor
   if (message) {
     const key = tempInboxMessageForwardKey(message);
     if (!seen.has(key)) {
-      try {
-        await sendPlainEmail(
-          sender.email,
-          sender.password,
-          recipients,
-          `Fwd: ${message.subject || "(No subject)"}`.slice(0, 180),
-          tempInboxForwardBody(account, message),
-          sender.email
-        );
-        seen.add(key);
-        forwarded = 1;
-      } catch (error) {
-        errors.push(error instanceof Error ? error.message : String(error));
+      const attemptErrors: string[] = [];
+      for (const sender of senders) {
+        if (!sender.email || !sender.password) {
+          if (sender.error) attemptErrors.push(sender.error);
+          continue;
+        }
+        try {
+          await sendPlainEmail(
+            sender.email,
+            sender.password,
+            recipients,
+            `Fwd: ${message.subject || "(No subject)"}`.slice(0, 180),
+            tempInboxForwardBody(account, message),
+            sender.email
+          );
+          seen.add(key);
+          forwarded = 1;
+          break;
+        } catch (error) {
+          attemptErrors.push(tempInboxForwardSendError(sender, error));
+          if (!smtpAuthFailed(error)) break;
+        }
       }
+      if (!forwarded) errors.push(...attemptErrors);
     }
   }
 
