@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { TempInboxAccount, TempInboxFetchResult, TempInboxMessage } from "@/lib/types";
 
@@ -170,27 +170,32 @@ export function TempInboxAccessPanel() {
   const [maxCount, setMaxCount] = useState(10);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [fetching, setFetching] = useState(false);
+  const [savingForwarding, setSavingForwarding] = useState(false);
+  const [forwardEnabled, setForwardEnabled] = useState(false);
+  const [forwardRecipients, setForwardRecipients] = useState("");
+  const [forwardIntervalSeconds, setForwardIntervalSeconds] = useState<10 | 20 | 30>(20);
   const [message, setMessage] = useState("");
   const [copiedValue, setCopiedValue] = useState("");
   const [isControlsOpen, setIsControlsOpen] = useState(false);
   const [mobileView, setMobileView] = useState<"list" | "preview">("list");
+  const autoFetchInFlight = useRef(false);
 
   const selectedAccount = useMemo(() => accounts.find((account) => account.id === selectedAccountId) ?? accounts[0] ?? null, [accounts, selectedAccountId]);
   const selectedResult = selectedAccount ? resultsByAccount[selectedAccount.id] : null;
   const messages = selectedResult?.messages ?? [];
   const selectedMessage = useMemo<TempInboxMessage | null>(() => messages.find((item) => item.id === selectedMessageId) ?? messages[0] ?? null, [messages, selectedMessageId]);
 
-  async function loadAccounts() {
-    setLoadingAccounts(true);
+  async function loadAccounts(silent = false) {
+    if (!silent) setLoadingAccounts(true);
     try {
       const result = await api<{ accounts: TempInboxAccount[] }>("/api/temp-inbox/accounts");
       setAccounts(result.accounts);
       setSelectedAccountId((current) => current && result.accounts.some((account) => account.id === current) ? current : result.accounts[0]?.id ?? "");
-      setMessage("");
+      if (!silent) setMessage("");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not load mailbox accounts.");
+      if (!silent) setMessage(error instanceof Error ? error.message : "Could not load mailbox accounts.");
     } finally {
-      setLoadingAccounts(false);
+      if (!silent) setLoadingAccounts(false);
     }
   }
 
@@ -202,6 +207,28 @@ export function TempInboxAccessPanel() {
     if (!selectedAccount || resultsByAccount[selectedAccount.id] || fetching) return;
     fetchMailbox(selectedAccount.id).catch(() => undefined);
   }, [selectedAccount?.id]);
+
+  useEffect(() => {
+    const forwarding = selectedAccount?.forwarding;
+    setForwardEnabled(Boolean(forwarding?.enabled));
+    setForwardRecipients((forwarding?.recipients || []).join(", "));
+    setForwardIntervalSeconds(forwarding?.intervalSeconds || 20);
+  }, [selectedAccount?.id, selectedAccount?.forwarding?.enabled, selectedAccount?.forwarding?.intervalSeconds, selectedAccount?.forwarding?.recipients?.join(",")]);
+
+  useEffect(() => {
+    const forwarding = selectedAccount?.forwarding;
+    if (!selectedAccount || !forwarding?.enabled || !forwarding.recipients.length) return;
+    const timer = window.setInterval(() => {
+      if (autoFetchInFlight.current) return;
+      autoFetchInFlight.current = true;
+      fetchMailbox(selectedAccount.id, { forward: true, silent: true })
+        .catch(() => undefined)
+        .finally(() => {
+          autoFetchInFlight.current = false;
+        });
+    }, forwarding.intervalSeconds * 1000);
+    return () => window.clearInterval(timer);
+  }, [selectedAccount?.id, selectedAccount?.forwarding?.enabled, selectedAccount?.forwarding?.intervalSeconds, selectedAccount?.forwarding?.recipients?.join(","), folder, keyword, maxCount]);
 
   async function copyText(value: string) {
     try {
@@ -254,24 +281,59 @@ export function TempInboxAccessPanel() {
     }
   }
 
-  async function fetchMailbox(accountId = selectedAccount?.id) {
-    if (!accountId) return;
-    setFetching(true);
-    setMessage("Fetching mailbox...");
+  async function saveForwarding(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedAccount) return;
+    setSavingForwarding(true);
+    setMessage("Saving forwarding...");
     try {
-      const result = await api<TempInboxFetchResult>("/api/temp-inbox/fetch", {
+      const result = await api<{ accounts: TempInboxAccount[] }>(`/api/temp-inbox/accounts/${encodeURIComponent(selectedAccount.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          forwardEnabled,
+          forwardRecipients,
+          forwardIntervalSeconds
+        })
+      });
+      setAccounts(result.accounts);
+      setMessage(forwardEnabled ? "Auto forwarding saved." : "Auto forwarding off.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not save forwarding.");
+    } finally {
+      setSavingForwarding(false);
+    }
+  }
+
+  async function fetchMailbox(accountId = selectedAccount?.id, options: { forward?: boolean; silent?: boolean } = {}) {
+    if (!accountId) return;
+    if (!options.silent) {
+      setFetching(true);
+      setMessage(options.forward ? "Fetching and forwarding..." : "Fetching mailbox...");
+    }
+    try {
+      const result = await api<TempInboxFetchResult>(options.forward ? "/api/temp-inbox/fetch-forward" : "/api/temp-inbox/fetch", {
         method: "POST",
         body: JSON.stringify({ accountId, folder, keyword, maxCount })
       });
       setResultsByAccount((current) => ({ ...current, [accountId]: result }));
       setSelectedMessageId(result.messages[0]?.id ?? "");
-      setMessage(`Fetched ${result.count} of ${result.total} messages.`);
-      await loadAccounts();
+      if (result.account) {
+        setAccounts((current) => current.map((account) => account.id === result.account?.id ? result.account : account));
+      } else {
+        await loadAccounts(true);
+      }
+      if (!options.silent) {
+        const forwarded = result.forwarding ? ` Forwarded ${result.forwarding.forwarded}.` : "";
+        const failed = result.forwarding?.errors?.[0] ? ` ${result.forwarding.errors[0]}` : "";
+        setMessage(`Fetched ${result.count} of ${result.total} messages.${forwarded}${failed}`);
+      } else if (result.forwarding?.forwarded) {
+        setMessage(`Auto forwarded ${result.forwarding.forwarded} new message${result.forwarding.forwarded === 1 ? "" : "s"}.`);
+      }
       setSelectedAccountId(accountId);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not fetch mailbox.");
+      if (!options.silent) setMessage(error instanceof Error ? error.message : "Could not fetch mailbox.");
     } finally {
-      setFetching(false);
+      if (!options.silent) setFetching(false);
     }
   }
 
@@ -344,6 +406,40 @@ export function TempInboxAccessPanel() {
           )}
         </div>
 
+        {selectedAccount ? (
+          <form className="grid gap-3 border border-line bg-white p-4 max-md:p-3" onSubmit={saveForwarding}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="eyebrow m-0 text-[10px]">Forwarding</p>
+                <strong className="mt-2 block text-sm text-ink">Auto forward</strong>
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs font-extrabold text-ink">
+                <input className="h-4 w-4 accent-[#3346d3]" type="checkbox" checked={forwardEnabled} onChange={(event) => setForwardEnabled(event.currentTarget.checked)} />
+                On
+              </label>
+            </div>
+            <label className="label text-xs">
+              Interval
+              <select className="field min-h-11" value={forwardIntervalSeconds} onChange={(event) => setForwardIntervalSeconds(Number(event.target.value) as 10 | 20 | 30)}>
+                <option value={10}>10 seconds</option>
+                <option value={20}>20 seconds</option>
+                <option value={30}>30 seconds</option>
+              </select>
+            </label>
+            <label className="label text-xs">
+              Forward to
+              <textarea className="min-h-20 border border-line bg-white px-3 py-3 text-sm outline-none focus:border-cta" value={forwardRecipients} onChange={(event) => setForwardRecipients(event.target.value)} placeholder="name@example.com, team@example.com" />
+            </label>
+            <button className="button button-secondary min-h-[42px]" type="submit" disabled={savingForwarding}>{savingForwarding ? "Saving..." : "Save forwarding"}</button>
+            {selectedAccount.forwarding?.lastForwardedAt ? (
+              <p className="text-xs font-bold leading-5 text-muted">
+                Last forward {formatDate(selectedAccount.forwarding.lastForwardedAt)} - {selectedAccount.forwarding.lastForwardedCount || 0} sent
+              </p>
+            ) : null}
+            {selectedAccount.forwarding?.lastForwardError ? <p className="text-xs font-bold leading-5 text-red-700">{selectedAccount.forwarding.lastForwardError}</p> : null}
+          </form>
+        ) : null}
+
         <p className="min-h-5 text-sm font-bold text-muted">{message}</p>
       </>
     );
@@ -383,7 +479,7 @@ export function TempInboxAccessPanel() {
                   <h2 className="mt-2 truncate text-xl font-extrabold text-ink max-md:mt-1 max-md:text-lg">{selectedAccount?.label || selectedAccount?.email || "No mailbox"}</h2>
                 </div>
               </div>
-              <button className="grid h-11 w-11 shrink-0 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta disabled:opacity-50" type="button" onClick={() => fetchMailbox()} disabled={!selectedAccount || fetching} aria-label="Fetch mailbox" title="Fetch mailbox">
+              <button className="grid h-11 w-11 shrink-0 place-items-center border border-line bg-white text-ink transition-colors hover:border-cta hover:text-cta disabled:opacity-50" type="button" onClick={() => fetchMailbox(undefined, { forward: Boolean(selectedAccount?.forwarding?.enabled) })} disabled={!selectedAccount || fetching} aria-label="Fetch mailbox" title="Fetch mailbox">
                 <RefreshIcon className={`h-5 w-5 ${fetching ? "animate-spin" : ""}`} />
               </button>
             </div>

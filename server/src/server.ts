@@ -117,11 +117,46 @@ type TempInboxAccount = {
   email: string;
   encPassword: string;
   label?: string;
+  forwarding?: TempInboxForwardingConfig;
   createdAt: string;
   lastFetchedAt?: string;
 };
 
-type PublicTempInboxAccount = Omit<TempInboxAccount, "encPassword">;
+type TempInboxForwardingConfig = {
+  enabled: boolean;
+  recipients: string[];
+  intervalSeconds: 10 | 20 | 30;
+  forwardedMessageIds?: string[];
+  lastForwardedAt?: string;
+  lastForwardedCount?: number;
+  lastForwardError?: string;
+};
+
+type PublicTempInboxForwardingConfig = Omit<TempInboxForwardingConfig, "forwardedMessageIds">;
+
+type PublicTempInboxAccount = Omit<TempInboxAccount, "encPassword" | "forwarding"> & {
+  forwarding?: PublicTempInboxForwardingConfig;
+};
+
+type NormalizedTempInboxMessage = {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  date: string;
+  body: string;
+  html?: string;
+  otp: string;
+};
+
+type NormalizedTempInboxResult = {
+  ok: boolean;
+  email: string;
+  folder: string;
+  total: number;
+  count: number;
+  messages: NormalizedTempInboxMessage[];
+};
 
 type TempInboxSessionRecord = {
   createdAt: string;
@@ -237,6 +272,8 @@ const TEMP_SESSION_COOKIE = "mail_temp_session";
 const TEMP_INBOX_SESSION_COOKIE = "mail_temp_inbox_session";
 const TEMP_INBOX_SESSION_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
 const TEMP_INBOX_FETCH_ENDPOINT = env.TEMP_INBOX_FETCH_ENDPOINT || "https://chongzhi.art/api/mailbox/fetch";
+const TEMP_INBOX_FORWARD_FROM_EMAIL = String(env.TEMP_INBOX_FORWARD_FROM_EMAIL || "").trim().toLowerCase();
+const TEMP_INBOX_FORWARD_FROM_PASSWORD = String(env.TEMP_INBOX_FORWARD_FROM_PASSWORD || "");
 const TEMP_MAIL_ENABLED = String(env.TEMP_MAIL_ENABLED ?? "false").toLowerCase() === "true";
 const TEMP_QUOTA_MB = Number(env.TEMP_QUOTA_MB || 128);
 const TEMP_OUTBOUND_DAILY_LIMIT = 0;
@@ -527,11 +564,17 @@ function encodeSubject(value: string): string {
 
 function normalizeRecipients(value: unknown): string[] {
   return String(value || "")
-    .split(/[;,]/)
+    .split(/[;,\n]/)
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean)
     .filter((item) => /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(item))
     .slice(0, 10);
+}
+
+function normalizeTempInboxForwardInterval(value: unknown): 10 | 20 | 30 {
+  const seconds = Number(value);
+  if (seconds === 10 || seconds === 20 || seconds === 30) return seconds;
+  return 20;
 }
 
 async function smtpCommand(socket: tls.TLSSocket, command: string, expected: number[]): Promise<string> {
@@ -744,6 +787,13 @@ async function readDb(): Promise<Db> {
   db.audit ||= [];
   for (const session of Object.values(db.tempInboxSessions)) {
     session.accounts ||= [];
+    for (const account of session.accounts) {
+      account.forwarding ||= { enabled: false, recipients: [], intervalSeconds: 20, forwardedMessageIds: [] };
+      account.forwarding.recipients ||= [];
+      account.forwarding.intervalSeconds = normalizeTempInboxForwardInterval(account.forwarding.intervalSeconds);
+      account.forwarding.forwardedMessageIds ||= [];
+      account.forwarding.enabled = Boolean(account.forwarding.enabled && account.forwarding.recipients.length);
+    }
   }
   for (const mailbox of Object.values(db.mailboxes)) {
     mailbox.kind ||= mailbox.expiresAt ? "temporary" : "permanent";
@@ -868,11 +918,13 @@ function validateEmail(value: unknown): string {
 }
 
 function publicTempInboxAccount(account: TempInboxAccount): PublicTempInboxAccount {
-  const { encPassword, ...publicFields } = account;
-  return publicFields;
+  const { encPassword, forwarding, ...publicFields } = account;
+  if (!forwarding) return publicFields;
+  const { forwardedMessageIds, ...publicForwarding } = forwarding;
+  return { ...publicFields, forwarding: publicForwarding };
 }
 
-function normalizeTempInboxMessage(value: any) {
+function normalizeTempInboxMessage(value: any): NormalizedTempInboxMessage {
   const body = String(value?.body || value?.text || "");
   const explicitHtml = String(value?.html || value?.bodyHtml || value?.body_html || value?.htmlBody || value?.textAsHtml || "");
   const html = explicitHtml || (/<(?:html|body|table|div|p|br|span|img|a)\b/i.test(body) ? body : "");
@@ -889,7 +941,7 @@ function normalizeTempInboxMessage(value: any) {
   };
 }
 
-function normalizeTempInboxResponse(value: any, fallbackEmail: string, fallbackFolder: string) {
+function normalizeTempInboxResponse(value: any, fallbackEmail: string, fallbackFolder: string): NormalizedTempInboxResult {
   const messages = Array.isArray(value?.messages) ? value.messages.map(normalizeTempInboxMessage) : [];
   return {
     ok: Boolean(value?.ok ?? true),
@@ -1210,6 +1262,67 @@ async function fetchExternalTempInbox(account: TempInboxAccount, folder: string,
     throw new Error(String((payload as any).error || (payload as any).message || "Mailbox fetch failed."));
   }
   return normalizeTempInboxResponse(payload, account.email, folder);
+}
+
+function tempInboxMessageForwardKey(message: NormalizedTempInboxMessage): string {
+  return String(message.id || `${message.date}:${message.from}:${message.subject}`).slice(0, 300);
+}
+
+function tempInboxForwardBody(account: TempInboxAccount, message: NormalizedTempInboxMessage): string {
+  const lines = [
+    `Forwarded from temp inbox ${account.email}`,
+    "",
+    `Original from: ${message.from || "Unknown Sender"}`,
+    `Original to: ${message.to || account.email}`,
+    `Original date: ${message.date || nowIso()}`,
+    `Original subject: ${message.subject || "(No subject)"}`,
+    "",
+    "----- Original message -----",
+    "",
+    message.body || "(No text body)",
+    message.html && !message.body ? `\n\nHTML body:\n${message.html}` : undefined
+  ];
+  return lines.filter((line) => line !== undefined).join("\n");
+}
+
+async function forwardTempInboxMessages(account: TempInboxAccount, messages: NormalizedTempInboxMessage[]): Promise<{ forwarded: number; skipped: number; recipients: string[]; errors: string[] }> {
+  const forwarding = account.forwarding;
+  const recipients = normalizeRecipients(forwarding?.recipients || []);
+  if (!forwarding?.enabled || !recipients.length) return { forwarded: 0, skipped: messages.length, recipients: [], errors: [] };
+
+  forwarding.forwardedMessageIds ||= [];
+  const seen = new Set(forwarding.forwardedMessageIds);
+  const authEmail = TEMP_INBOX_FORWARD_FROM_EMAIL || account.email;
+  const authPassword = TEMP_INBOX_FORWARD_FROM_PASSWORD || decrypt(account.encPassword);
+  let forwarded = 0;
+  const errors: string[] = [];
+
+  for (const message of messages) {
+    const key = tempInboxMessageForwardKey(message);
+    if (seen.has(key)) continue;
+    try {
+      await sendPlainEmail(
+        authEmail,
+        authPassword,
+        recipients,
+        `Fwd: ${message.subject || "(No subject)"}`.slice(0, 180),
+        tempInboxForwardBody(account, message),
+        authEmail
+      );
+      seen.add(key);
+      forwarded += 1;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+      break;
+    }
+  }
+
+  forwarding.forwardedMessageIds = Array.from(seen).slice(-1000);
+  forwarding.lastForwardedAt = nowIso();
+  forwarding.lastForwardedCount = forwarded;
+  if (errors.length) forwarding.lastForwardError = errors[0];
+  else delete forwarding.lastForwardError;
+  return { forwarded, skipped: Math.max(0, messages.length - forwarded), recipients, errors };
 }
 
 async function deleteMailuAlias(alias: MailAlias): Promise<MailuCreateResult> {
@@ -2159,6 +2272,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         email,
         encPassword: encrypt(password),
         label: label || undefined,
+        forwarding: { enabled: false, recipients: [], intervalSeconds: 20, forwardedMessageIds: [] },
         createdAt: nowIso()
       });
     }
@@ -2167,6 +2281,26 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 
   const tempInboxAccountRoute = url.pathname.match(/^\/api\/temp-inbox\/accounts\/([^/]+)$/);
+  if (tempInboxAccountRoute && req.method === "PATCH") {
+    const tempInbox = getOrCreateTempInboxSession(req, res, db);
+    const id = decodeURIComponent(tempInboxAccountRoute[1]);
+    const account = tempInbox.session.accounts.find((item) => item.id === id);
+    if (!account) return json(res, 404, { error: "Mailbox account not found." });
+    const body = await parseBody(req);
+    const recipients = normalizeRecipients(body.forwardRecipients);
+    const intervalSeconds = normalizeTempInboxForwardInterval(body.forwardIntervalSeconds);
+    const enabled = Boolean(body.forwardEnabled);
+    if (enabled && !recipients.length) return json(res, 400, { error: "Add at least one forwarding recipient before enabling auto forward." });
+    account.forwarding ||= { enabled: false, recipients: [], intervalSeconds: 20, forwardedMessageIds: [] };
+    account.forwarding.enabled = enabled;
+    account.forwarding.recipients = recipients;
+    account.forwarding.intervalSeconds = intervalSeconds;
+    account.forwarding.forwardedMessageIds ||= [];
+    if (!enabled) delete account.forwarding.lastForwardError;
+    await writeDb(db);
+    return json(res, 200, { account: publicTempInboxAccount(account), accounts: tempInbox.session.accounts.map(publicTempInboxAccount) });
+  }
+
   if (tempInboxAccountRoute && req.method === "DELETE") {
     const tempInbox = getOrCreateTempInboxSession(req, res, db);
     const id = decodeURIComponent(tempInboxAccountRoute[1]);
@@ -2176,7 +2310,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 
   if (req.method === "POST" && url.pathname === "/api/temp-inbox/fetch") {
-    if (!rateLimit(req, "temp-inbox-fetch", 60, 15 * 60 * 1000)) return json(res, 429, { error: "Too many mailbox fetches. Try again later." });
+    if (!rateLimit(req, "temp-inbox-fetch", 120, 15 * 60 * 1000)) return json(res, 429, { error: "Too many mailbox fetches. Try again later." });
     const body = await parseBody(req);
     const accountId = String(body.accountId || "").trim();
     const folder = String(body.folder || "ALL").trim().slice(0, 40) || "ALL";
@@ -2192,6 +2326,27 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return json(res, 200, result);
     } catch (error) {
       return json(res, 502, { error: error instanceof Error ? error.message : "Mailbox fetch failed." });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/temp-inbox/fetch-forward") {
+    if (!rateLimit(req, "temp-inbox-fetch-forward", 120, 15 * 60 * 1000)) return json(res, 429, { error: "Too many mailbox fetches. Try again later." });
+    const body = await parseBody(req);
+    const accountId = String(body.accountId || "").trim();
+    const folder = String(body.folder || "ALL").trim().slice(0, 40) || "ALL";
+    const keyword = String(body.keyword || "").trim().slice(0, 120);
+    const maxCount = Math.max(1, Math.min(50, Number(body.maxCount || 10) || 10));
+    const tempInbox = getOrCreateTempInboxSession(req, res, db);
+    const account = tempInbox.session.accounts.find((item) => item.id === accountId);
+    if (!account) return json(res, 404, { error: "Mailbox account not found." });
+    try {
+      const result = await fetchExternalTempInbox(account, folder, keyword, maxCount);
+      account.lastFetchedAt = nowIso();
+      const forwarding = await forwardTempInboxMessages(account, result.messages);
+      await writeDb(db);
+      return json(res, 200, { ...result, forwarding, account: publicTempInboxAccount(account) });
+    } catch (error) {
+      return json(res, 502, { error: error instanceof Error ? error.message : "Mailbox fetch and forward failed." });
     }
   }
 

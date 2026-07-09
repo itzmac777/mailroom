@@ -96,6 +96,14 @@ export type TempInboxAccount = {
   id: string;
   email: string;
   label?: string;
+  forwarding?: {
+    enabled: boolean;
+    recipients: string[];
+    intervalSeconds: 10 | 20 | 30;
+    lastForwardedAt?: string;
+    lastForwardedCount?: number;
+    lastForwardError?: string;
+  };
   createdAt: string;
   lastFetchedAt?: string;
 };
@@ -118,4 +126,11 @@ export type TempInboxFetchResult = {
   total: number;
   count: number;
   messages: TempInboxMessage[];
+  forwarding?: {
+    forwarded: number;
+    skipped: number;
+    recipients: string[];
+    errors: string[];
+  };
+  account?: TempInboxAccount;
 };
