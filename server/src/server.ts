@@ -1285,6 +1285,29 @@ function tempInboxForwardBody(account: TempInboxAccount, message: NormalizedTemp
   return lines.filter((line) => line !== undefined).join("\n");
 }
 
+function tempInboxForwardSender(account: TempInboxAccount): { email: string; password: string } {
+  if (TEMP_INBOX_FORWARD_FROM_EMAIL || TEMP_INBOX_FORWARD_FROM_PASSWORD) {
+    if (!TEMP_INBOX_FORWARD_FROM_EMAIL || !TEMP_INBOX_FORWARD_FROM_PASSWORD) {
+      throw new Error("Temp inbox forwarding sender is incomplete. Set both TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD.");
+    }
+    return { email: TEMP_INBOX_FORWARD_FROM_EMAIL, password: TEMP_INBOX_FORWARD_FROM_PASSWORD };
+  }
+  if (account.email.toLowerCase().endsWith(`@${MAIL_DOMAIN}`)) {
+    return { email: account.email, password: decrypt(account.encPassword) };
+  }
+  throw new Error(`Temp inbox forwarding needs a Mailu sender. Set TEMP_INBOX_FORWARD_FROM_EMAIL and TEMP_INBOX_FORWARD_FROM_PASSWORD to a mailbox on ${MAIL_DOMAIN}.`);
+}
+
+function latestTempInboxMessage(messages: NormalizedTempInboxMessage[]): NormalizedTempInboxMessage | undefined {
+  if (!messages.length) return undefined;
+  const dated = messages
+    .map((message, index) => ({ message, index, time: new Date(message.date).getTime() }))
+    .filter((item) => Number.isFinite(item.time));
+  if (!dated.length) return messages[0];
+  dated.sort((a, b) => b.time - a.time || a.index - b.index);
+  return dated[0]?.message;
+}
+
 async function forwardTempInboxMessages(account: TempInboxAccount, messages: NormalizedTempInboxMessage[]): Promise<{ forwarded: number; skipped: number; recipients: string[]; errors: string[] }> {
   const forwarding = account.forwarding;
   const recipients = normalizeRecipients(forwarding?.recipients || []);
@@ -1292,28 +1315,28 @@ async function forwardTempInboxMessages(account: TempInboxAccount, messages: Nor
 
   forwarding.forwardedMessageIds ||= [];
   const seen = new Set(forwarding.forwardedMessageIds);
-  const authEmail = TEMP_INBOX_FORWARD_FROM_EMAIL || account.email;
-  const authPassword = TEMP_INBOX_FORWARD_FROM_PASSWORD || decrypt(account.encPassword);
-  let forwarded = 0;
+  const sender = tempInboxForwardSender(account);
   const errors: string[] = [];
+  const message = latestTempInboxMessage(messages);
+  let forwarded = 0;
 
-  for (const message of messages) {
+  if (message) {
     const key = tempInboxMessageForwardKey(message);
-    if (seen.has(key)) continue;
-    try {
-      await sendPlainEmail(
-        authEmail,
-        authPassword,
-        recipients,
-        `Fwd: ${message.subject || "(No subject)"}`.slice(0, 180),
-        tempInboxForwardBody(account, message),
-        authEmail
-      );
-      seen.add(key);
-      forwarded += 1;
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
-      break;
+    if (!seen.has(key)) {
+      try {
+        await sendPlainEmail(
+          sender.email,
+          sender.password,
+          recipients,
+          `Fwd: ${message.subject || "(No subject)"}`.slice(0, 180),
+          tempInboxForwardBody(account, message),
+          sender.email
+        );
+        seen.add(key);
+        forwarded = 1;
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
     }
   }
 
@@ -1322,7 +1345,7 @@ async function forwardTempInboxMessages(account: TempInboxAccount, messages: Nor
   forwarding.lastForwardedCount = forwarded;
   if (errors.length) forwarding.lastForwardError = errors[0];
   else delete forwarding.lastForwardError;
-  return { forwarded, skipped: Math.max(0, messages.length - forwarded), recipients, errors };
+  return { forwarded, skipped: message && forwarded === 0 ? 1 : 0, recipients, errors };
 }
 
 async function deleteMailuAlias(alias: MailAlias): Promise<MailuCreateResult> {
@@ -2291,6 +2314,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const intervalSeconds = normalizeTempInboxForwardInterval(body.forwardIntervalSeconds);
     const enabled = Boolean(body.forwardEnabled);
     if (enabled && !recipients.length) return json(res, 400, { error: "Add at least one forwarding recipient before enabling auto forward." });
+    if (enabled) {
+      try {
+        tempInboxForwardSender(account);
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : "Temp inbox forwarding sender is not configured." });
+      }
+    }
     account.forwarding ||= { enabled: false, recipients: [], intervalSeconds: 20, forwardedMessageIds: [] };
     account.forwarding.enabled = enabled;
     account.forwarding.recipients = recipients;

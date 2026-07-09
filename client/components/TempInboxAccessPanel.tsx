@@ -323,11 +323,11 @@ export function TempInboxAccessPanel() {
         await loadAccounts(true);
       }
       if (!options.silent) {
-        const forwarded = result.forwarding ? ` Forwarded ${result.forwarding.forwarded}.` : "";
+        const forwarded = result.forwarding?.forwarded ? " Forwarded latest message." : result.forwarding ? " No new latest message to forward." : "";
         const failed = result.forwarding?.errors?.[0] ? ` ${result.forwarding.errors[0]}` : "";
         setMessage(`Fetched ${result.count} of ${result.total} messages.${forwarded}${failed}`);
       } else if (result.forwarding?.forwarded) {
-        setMessage(`Auto forwarded ${result.forwarding.forwarded} new message${result.forwarding.forwarded === 1 ? "" : "s"}.`);
+        setMessage("Auto forwarded 1 new message.");
       }
       setSelectedAccountId(accountId);
     } catch (error) {
