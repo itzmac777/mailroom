@@ -1107,10 +1107,10 @@ function generatedRotatorMailboxPassword(): string {
   return `${randomToken(24)}Aa1!`;
 }
 
-function mailuUserUpdateEndpoint(email: string): string {
+function mailuUserUpdateEndpoint(identifier: string): string {
   return MAILU_UPDATE_USER_ENDPOINT.endsWith("/")
-    ? `${MAILU_UPDATE_USER_ENDPOINT}${encodeURIComponent(email)}`
-    : `${MAILU_UPDATE_USER_ENDPOINT}/${encodeURIComponent(email)}`;
+    ? `${MAILU_UPDATE_USER_ENDPOINT}${encodeURIComponent(identifier)}`
+    : `${MAILU_UPDATE_USER_ENDPOINT}/${encodeURIComponent(identifier)}`;
 }
 
 async function fetchVerificationViaImap(authUser: string, pass: string, targetEmail: string, keyword = "openai"): Promise<VerificationMatch | undefined> {
@@ -1244,23 +1244,47 @@ async function resetMailuMailboxPassword(email: string, password: string): Promi
   const base = env.MAILU_API_BASE;
   const token = env.MAILU_API_TOKEN;
   if (!base || !token) throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
-  const response = await fetch(new URL(mailuUserUpdateEndpoint(email), base).toString(), {
-    method: "PATCH",
-    signal: AbortSignal.timeout(15_000),
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-      "x-api-key": token
-    },
-    body: JSON.stringify({
-      email,
-      raw_password: password,
-      enabled: true
-    })
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`Mailu password reset failed with ${response.status}: ${text.slice(0, 300)}`);
-  return { provider: "mailu", status: response.status, body: text ? safeJson(text) : null };
+  const local = email.split("@")[0];
+  const identifiers = Array.from(new Set([email, local]));
+  const notFoundDetails: string[] = [];
+  for (const identifier of identifiers) {
+    const response = await fetch(new URL(mailuUserUpdateEndpoint(identifier), base).toString(), {
+      method: "PATCH",
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-api-key": token
+      },
+      body: JSON.stringify({
+        email,
+        raw_password: password,
+        enabled: true
+      })
+    });
+    const text = await response.text();
+    if (response.ok) {
+      return {
+        provider: "mailu",
+        status: response.status,
+        body: { updated: true, identifier, response: text ? safeJson(text) : null }
+      };
+    }
+    if (response.status === 404) {
+      notFoundDetails.push(`${identifier}: ${text.slice(0, 180)}`);
+      continue;
+    }
+    throw new Error(`Mailu password reset failed with ${response.status}: ${text.slice(0, 300)}`);
+  }
+
+  try {
+    const created = await createMailuUser(local, password, local, DEFAULT_QUOTA_MB, "Created by Mailroom rotator onboarding");
+    return { provider: "mailu", status: created.status, body: { created: true, response: created.body } };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error || "unknown error");
+    const notFound = notFoundDetails.length ? ` Reset attempts returned 404 (${notFoundDetails.join("; ")}).` : "";
+    throw new Error(`Mailu user was not found and automatic mailbox creation failed: ${reason}.${notFound}`);
+  }
 }
 
 async function rotateZenvyMailboxPassword(db: Db, email: string): Promise<string> {

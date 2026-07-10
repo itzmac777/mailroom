@@ -156,9 +156,10 @@ device.
 Device-token only. Fetches the latest OpenAI verification code for the claimed
 item. Local domain mailboxes try the rotator IMAP master credentials first. If
 master-user auth is unavailable, Mailroom resets the target mailbox password
-through `MAILU_UPDATE_USER_ENDPOINT`, stores the generated password encrypted,
-and then fetches the OTP with normal mailbox IMAP auth. External mailboxes use
-the existing temp-inbox fetch path.
+through `MAILU_UPDATE_USER_ENDPOINT`, creating the Mailu mailbox first when it
+does not exist, stores the generated password encrypted, and then fetches the OTP
+with normal mailbox IMAP auth. External mailboxes use the existing temp-inbox
+fetch path.
 
 ### `GET /api/rotator/onboarding/imap-test?email=:email`
 
