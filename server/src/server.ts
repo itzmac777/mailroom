@@ -2662,7 +2662,6 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
 
     if (req.method === "DELETE") {
       if (!isAdmin) return json(res, 401, { error: "Admin token required." });
-      job.status = "cancelled";
       for (const item of job.items) {
         if (item.status === "queued" || item.status === "logging_in" || item.status === "awaiting_otp" || item.status === "verifying") {
           item.status = "needs_manual";
@@ -2671,9 +2670,10 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
         }
         purgeOnboardingCredential(db, job.id, item.id);
       }
-      await audit(db, "admin", "rotator_onboarding_job_cancelled", { jobId });
+      delete db.rotatorOnboardingJobs[job.id];
+      await audit(db, "admin", "rotator_onboarding_job_removed", { jobId });
       await writeDb(db);
-      return json(res, 200, { job: publicRotatorOnboardingJob(job) });
+      return json(res, 200, { deleted: true, job: publicRotatorOnboardingJob({ ...job, status: "cancelled" }) });
     }
   }
 

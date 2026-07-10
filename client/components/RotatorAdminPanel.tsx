@@ -57,6 +57,7 @@ export function RotatorAdminPanel() {
   const [busy, setBusy] = useState(false);
   const [issuedToken, setIssuedToken] = useState<{ name: string; token: string } | null>(null);
   const [bulkInput, setBulkInput] = useState("");
+  const [showAllOnboardingJobs, setShowAllOnboardingJobs] = useState(false);
 
   const accountById = useMemo(() => {
     return new Map(data.accounts.map((account) => [account.id, account]));
@@ -65,6 +66,12 @@ export function RotatorAdminPanel() {
   const deviceById = useMemo(() => {
     return new Map(data.devices.map((device) => [device.id, device]));
   }, [data.devices]);
+
+  const onboardingJobs = useMemo(() => {
+    return [...data.jobs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [data.jobs]);
+
+  const visibleOnboardingJobs = showAllOnboardingJobs ? onboardingJobs : onboardingJobs.slice(0, 3);
 
   async function refresh(currentToken = token) {
     setBusy(true);
@@ -193,6 +200,28 @@ export function RotatorAdminPanel() {
     setMessage("Failed items are loaded into the bulk box. Add passwords where needed, then submit a new job.");
   }
 
+  async function removeOnboardingJob(job: RotatorOnboardingJob) {
+    const label = `Job ${job.id.slice(0, 8)}`;
+    const prompt = job.status === "running"
+      ? `${label} is still running. Remove it and cancel any remaining queued items?`
+      : `Remove ${label} from onboarding history?`;
+    if (!confirm(prompt)) return;
+    setBusy(true);
+    setMessage("Removing onboarding job...");
+    try {
+      await api<{ deleted: boolean }>(`/api/rotator/onboarding/jobs/${encodeURIComponent(job.id)}`, {
+        method: "DELETE",
+        headers: { "x-admin-token": token }
+      });
+      await refresh(token);
+      setMessage("Onboarding job removed.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not remove onboarding job.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function createDevice(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -283,6 +312,11 @@ export function RotatorAdminPanel() {
           <div>
             <p className="eyebrow">Bulk onboarding</p>
             <h2 className="text-2xl font-extrabold">Automated account setup</h2>
+            {onboardingJobs.length > 3 ? (
+              <p className="mt-2 text-sm font-bold text-muted">
+                Showing {visibleOnboardingJobs.length} of {onboardingJobs.length} jobs
+              </p>
+            ) : null}
           </div>
           <form className="grid min-w-[520px] gap-3 max-lg:min-w-0" onSubmit={createOnboardingJob}>
             <textarea
@@ -297,7 +331,23 @@ export function RotatorAdminPanel() {
         </div>
 
         <div className="grid gap-4">
-          {data.jobs.length ? data.jobs.map((job) => {
+          {onboardingJobs.length ? (
+            <>
+              <div className="flex items-center justify-between gap-3 border-y border-line py-3 max-md:grid">
+                <p className="text-sm font-bold text-muted">
+                  Latest onboarding jobs
+                </p>
+                {onboardingJobs.length > 3 ? (
+                  <button
+                    className="button button-secondary min-h-[34px] px-3 text-xs"
+                    type="button"
+                    onClick={() => setShowAllOnboardingJobs((value) => !value)}
+                  >
+                    {showAllOnboardingJobs ? "Show latest 3" : `Show all ${onboardingJobs.length}`}
+                  </button>
+                ) : null}
+              </div>
+              {visibleOnboardingJobs.map((job) => {
             const failedCount = job.items.filter((item) => item.status === "failed" || item.status === "needs_manual").length;
             return (
               <article key={job.id} className="border border-line p-4">
@@ -315,6 +365,9 @@ export function RotatorAdminPanel() {
                         Retry failed
                       </button>
                     ) : null}
+                    <button className="button min-h-[34px] border-red-600 px-3 text-xs font-extrabold text-red-600 hover:bg-red-50" type="button" onClick={() => removeOnboardingJob(job)} disabled={busy || !token}>
+                      Remove
+                    </button>
                   </div>
                 </div>
                 <div className="grid border-t border-line">
@@ -336,7 +389,9 @@ export function RotatorAdminPanel() {
                 </div>
               </article>
             );
-          }) : <p className="text-muted">No onboarding jobs yet.</p>}
+          })}
+            </>
+          ) : <p className="text-muted">No onboarding jobs yet.</p>}
         </div>
       </div>
 

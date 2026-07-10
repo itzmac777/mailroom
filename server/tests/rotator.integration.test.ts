@@ -185,6 +185,19 @@ test("rotator device, account, session, audit, and revocation flow", async () =>
     assert.equal(sessionFetchAudit.accountId, accountId);
     assert.equal(credentialClaimAudit.jobId, createdJob.payload.job.id);
 
+    const removedJob = await request(baseUrl, `/api/rotator/onboarding/jobs/${createdJob.payload.job.id}`, {
+      method: "DELETE",
+      headers: { "x-admin-token": adminToken }
+    });
+    assert.equal(removedJob.response.status, 200);
+    assert.equal(removedJob.payload.deleted, true);
+
+    const jobsAfterRemove = await request(baseUrl, "/api/rotator/onboarding/jobs", {
+      headers: { "x-admin-token": adminToken }
+    });
+    assert.equal(jobsAfterRemove.response.status, 200);
+    assert.equal(jobsAfterRemove.payload.jobs.some((job: any) => job.id === createdJob.payload.job.id), false);
+
     const updatedAccount = await request(baseUrl, `/api/rotator/accounts/${accountId}`, {
       method: "PATCH",
       headers: { "x-admin-token": adminToken },

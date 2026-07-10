@@ -177,4 +177,6 @@ The stored credential for that item is purged regardless of result.
 
 ### `DELETE /api/rotator/onboarding/jobs/:id`
 
-Admin-only. Cancels a job and immediately purges remaining credentials.
+Admin-only. Removes a job from onboarding history and immediately purges any
+remaining credentials. If the job is still running, remaining in-flight items
+are marked manual before the record is removed.
