@@ -1,19 +1,30 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import type { RotatorAccount, RotatorAuditEntry, RotatorDevice } from "@/lib/types";
+import type { RotatorAccount, RotatorAuditEntry, RotatorDevice, RotatorOnboardingJob } from "@/lib/types";
 
 type RotatorData = {
   accounts: RotatorAccount[];
   devices: RotatorDevice[];
   audit: RotatorAuditEntry[];
+  jobs: RotatorOnboardingJob[];
 };
 
 const statusTone: Record<RotatorAccount["status"], string> = {
   active: "border-green-200 bg-green-50 text-green-700",
   needs_relogin: "border-amber-200 bg-amber-50 text-amber-800",
   unknown: "border-line bg-soft text-muted"
+};
+
+const onboardingTone: Record<RotatorOnboardingJob["items"][number]["status"], string> = {
+  queued: "border-line bg-soft text-muted",
+  logging_in: "border-blue-200 bg-blue-50 text-blue-700",
+  awaiting_otp: "border-blue-200 bg-blue-50 text-blue-700",
+  verifying: "border-blue-200 bg-blue-50 text-blue-700",
+  saved: "border-green-200 bg-green-50 text-green-700",
+  failed: "border-red-200 bg-red-50 text-red-700",
+  needs_manual: "border-amber-200 bg-amber-50 text-amber-800"
 };
 
 function formatDate(value?: string): string {
@@ -24,12 +35,28 @@ function formatDate(value?: string): string {
   }).format(new Date(value));
 }
 
+function parseBulkLines(value: string): Array<{ email: string; password?: string; label?: string }> {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [email = "", password = "", label = ""] = line.split(",").map((part) => part.trim());
+      return {
+        email,
+        password: password || undefined,
+        label: label || undefined
+      };
+    });
+}
+
 export function RotatorAdminPanel() {
   const [token, setToken] = useState("");
-  const [data, setData] = useState<RotatorData>({ accounts: [], devices: [], audit: [] });
+  const [data, setData] = useState<RotatorData>({ accounts: [], devices: [], audit: [], jobs: [] });
   const [message, setMessage] = useState("Enter the admin token and refresh.");
   const [busy, setBusy] = useState(false);
   const [issuedToken, setIssuedToken] = useState<{ name: string; token: string } | null>(null);
+  const [bulkInput, setBulkInput] = useState("");
 
   const accountById = useMemo(() => {
     return new Map(data.accounts.map((account) => [account.id, account]));
@@ -43,15 +70,17 @@ export function RotatorAdminPanel() {
     setBusy(true);
     setMessage("Refreshing...");
     try {
-      const [accountsResult, devicesResult, auditResult] = await Promise.all([
+      const [accountsResult, devicesResult, auditResult, jobsResult] = await Promise.all([
         api<{ accounts: RotatorAccount[] }>("/api/rotator/accounts", { headers: { "x-admin-token": currentToken } }),
         api<{ devices: RotatorDevice[] }>("/api/rotator/devices", { headers: { "x-admin-token": currentToken } }),
-        api<{ audit: RotatorAuditEntry[] }>("/api/rotator/audit", { headers: { "x-admin-token": currentToken } })
+        api<{ audit: RotatorAuditEntry[] }>("/api/rotator/audit", { headers: { "x-admin-token": currentToken } }),
+        api<{ jobs: RotatorOnboardingJob[] }>("/api/rotator/onboarding/jobs", { headers: { "x-admin-token": currentToken } })
       ]);
       setData({
         accounts: accountsResult.accounts,
         devices: devicesResult.devices,
-        audit: auditResult.audit
+        audit: auditResult.audit,
+        jobs: jobsResult.jobs
       });
       setMessage("");
     } catch (error) {
@@ -60,6 +89,14 @@ export function RotatorAdminPanel() {
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!token || !data.jobs.some((job) => job.status === "running")) return;
+    const timer = window.setInterval(() => {
+      refresh(token).catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [token, data.jobs]);
 
   async function createAccount(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -118,6 +155,42 @@ export function RotatorAdminPanel() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function createOnboardingJob(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const items = parseBulkLines(bulkInput);
+    if (!items.length) {
+      setMessage("Paste at least one account line.");
+      return;
+    }
+    if (items.length > 10) {
+      setMessage("Bulk onboarding is capped at 10 accounts per job.");
+      return;
+    }
+    setBusy(true);
+    setMessage("Creating onboarding job...");
+    try {
+      await api<{ job: RotatorOnboardingJob }>("/api/rotator/onboarding/jobs", {
+        method: "POST",
+        headers: { "x-admin-token": token },
+        body: JSON.stringify({ items })
+      });
+      setBulkInput("");
+      await refresh(token);
+      setMessage("Onboarding job created. Start it from the extension popup.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not create onboarding job.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function retryFailed(job: RotatorOnboardingJob) {
+    const failed = job.items.filter((item) => item.status === "failed" || item.status === "needs_manual");
+    if (!failed.length) return;
+    setBulkInput(failed.map((item) => `${item.email},,${item.label || ""}`).join("\n"));
+    setMessage("Failed items are loaded into the bulk box. Add passwords where needed, then submit a new job.");
   }
 
   async function createDevice(event: React.FormEvent<HTMLFormElement>) {
@@ -205,6 +278,68 @@ export function RotatorAdminPanel() {
         </div>
       </div>
 
+      <div className="panel p-7">
+        <div className="mb-6 flex items-start justify-between gap-4 max-lg:grid">
+          <div>
+            <p className="eyebrow">Bulk onboarding</p>
+            <h2 className="text-2xl font-extrabold">Automated account setup</h2>
+          </div>
+          <form className="grid min-w-[520px] gap-3 max-lg:min-w-0" onSubmit={createOnboardingJob}>
+            <textarea
+              className="field min-h-[128px] resize-y font-mono text-sm"
+              value={bulkInput}
+              onChange={(event) => setBulkInput(event.target.value)}
+              placeholder="name@zenvy.com.bd,,acct-1&#10;name@outlook.com,password,acct-2"
+              spellCheck={false}
+            />
+            <button className="button button-primary justify-self-end" type="submit" disabled={busy || !token}>Create job</button>
+          </form>
+        </div>
+
+        <div className="grid gap-4">
+          {data.jobs.length ? data.jobs.map((job) => {
+            const failedCount = job.items.filter((item) => item.status === "failed" || item.status === "needs_manual").length;
+            return (
+              <article key={job.id} className="border border-line p-4">
+                <div className="mb-4 flex items-center justify-between gap-3 max-md:grid">
+                  <div>
+                    <strong className="text-sm">Job {job.id.slice(0, 8)}</strong>
+                    <p className="mt-1 text-xs text-muted">{formatDate(job.createdAt)} · {job.items.length} item(s)</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex min-h-[32px] items-center border border-line bg-soft px-3 text-xs font-extrabold uppercase text-muted">
+                      {job.status}
+                    </span>
+                    {failedCount ? (
+                      <button className="button button-secondary min-h-[34px] px-3" type="button" onClick={() => retryFailed(job)}>
+                        Retry failed
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="grid border-t border-line">
+                  {job.items.map((item) => (
+                    <div key={item.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 border-b border-line py-3 text-sm max-lg:grid-cols-1">
+                      <div>
+                        <strong>{item.label || item.email}</strong>
+                        <p className="mt-1 text-xs text-muted">
+                          {item.email} · {item.hasPassword ? "Password supplied" : "Email code only"}
+                          {item.errorReason ? ` · ${item.errorReason.replace("_", " ")}` : ""}
+                        </p>
+                      </div>
+                      <span className={`inline-flex min-h-[32px] items-center justify-center border px-3 text-xs font-extrabold uppercase ${onboardingTone[item.status]}`}>
+                        {item.status.replace("_", " ")}
+                      </span>
+                      <span className="text-xs font-bold text-muted">Attempts {item.attempts}</span>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            );
+          }) : <p className="text-muted">No onboarding jobs yet.</p>}
+        </div>
+      </div>
+
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(320px,0.52fr)] gap-8 max-xl:grid-cols-1">
         <div className="panel p-7">
           <div className="mb-6 flex items-start justify-between gap-4 max-md:grid">
@@ -287,7 +422,7 @@ export function RotatorAdminPanel() {
             <div className="grid border-t border-line">
               {data.audit.length ? data.audit.map((entry) => (
                 <div key={entry.id} className="border-b border-line py-4 text-sm">
-                  <strong>{accountById.get(entry.accountId)?.label || entry.accountId}</strong>
+                  <strong>{entry.accountId ? accountById.get(entry.accountId)?.label || entry.accountId : entry.event.replaceAll("_", " ")}</strong>
                   <p className="mt-1 text-xs text-muted">
                     {deviceById.get(entry.deviceId)?.name || entry.deviceId} · {formatDate(entry.at)}
                   </p>

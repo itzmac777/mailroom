@@ -203,12 +203,54 @@ type RotatorSessionSnapshot = {
   updatedAt: string;
 };
 
+type RotatorOnboardingJobStatus = "running" | "completed" | "cancelled";
+type RotatorOnboardingItemStatus = "queued" | "logging_in" | "awaiting_otp" | "verifying" | "saved" | "failed" | "needs_manual";
+type RotatorOnboardingErrorReason =
+  | "wrong_password"
+  | "otp_timeout"
+  | "captcha_encountered"
+  | "unexpected_page"
+  | "unknown_error"
+  | "missing_password"
+  | "otp_not_found";
+
+type RotatorOnboardingItem = {
+  id: string;
+  accountId: string;
+  email: string;
+  hasPassword: boolean;
+  label?: string;
+  status: RotatorOnboardingItemStatus;
+  errorReason?: RotatorOnboardingErrorReason;
+  attempts: number;
+  claimedByDeviceId?: string;
+  claimedAt?: string;
+  completedAt?: string;
+};
+
+type RotatorOnboardingJob = {
+  id: string;
+  createdAt: string;
+  status: RotatorOnboardingJobStatus;
+  createdByDevice?: string;
+  items: RotatorOnboardingItem[];
+};
+
+type RotatorOnboardingCredential = {
+  jobId: string;
+  itemId: string;
+  encryptedPayload: string;
+  createdAt: string;
+};
+
 type RotatorAuditEntry = {
   id: string;
   at: string;
   deviceId: string;
-  accountId: string;
-  event: "session_fetched";
+  accountId?: string;
+  jobId?: string;
+  itemId?: string;
+  event: "session_fetched" | "onboarding_credential_claimed" | "onboarding_otp_fetch";
 };
 
 type PublicRotatorAccount = RotatorAccount & {
@@ -226,6 +268,8 @@ type Db = {
   rotatorAccounts: Record<string, RotatorAccount>;
   rotatorDevices: Record<string, RotatorDevice>;
   rotatorSessions: Record<string, RotatorSessionSnapshot>;
+  rotatorOnboardingJobs: Record<string, RotatorOnboardingJob>;
+  rotatorOnboardingCredentials: Record<string, RotatorOnboardingCredential>;
   rotatorAudit: RotatorAuditEntry[];
   audit: AuditEntry[];
 };
@@ -334,6 +378,11 @@ const TEMP_INBOX_FETCH_ENDPOINT = env.TEMP_INBOX_FETCH_ENDPOINT || "https://chon
 const TEMP_INBOX_FORWARD_FROM_EMAIL = String(env.TEMP_INBOX_FORWARD_FROM_EMAIL || "").trim().toLowerCase();
 const TEMP_INBOX_FORWARD_FROM_PASSWORD = String(env.TEMP_INBOX_FORWARD_FROM_PASSWORD || "");
 const TEMP_INBOX_BACKGROUND_POLL_MS = Math.max(1000, Number(env.TEMP_INBOX_BACKGROUND_POLL_MS || 5000));
+const ROTATOR_ONBOARDING_MAX_ITEMS = Math.min(10, Math.max(1, Number(env.ROTATOR_ONBOARDING_MAX_ITEMS || 10)));
+const ROTATOR_ONBOARDING_CREDENTIAL_TTL_MS = 60 * 60 * 1000;
+const ROTATOR_ZENVY_IMAP_MASTER_USER = String(env.ROTATOR_ZENVY_IMAP_MASTER_USER || "").trim();
+const ROTATOR_ZENVY_IMAP_MASTER_PASSWORD = String(env.ROTATOR_ZENVY_IMAP_MASTER_PASSWORD || "");
+const ROTATOR_ZENVY_IMAP_AUTH_FORMAT = String(env.ROTATOR_ZENVY_IMAP_AUTH_FORMAT || "{email}*{masterUser}");
 const TEMP_MAIL_ENABLED = String(env.TEMP_MAIL_ENABLED ?? "false").toLowerCase() === "true";
 const TEMP_QUOTA_MB = Number(env.TEMP_QUOTA_MB || 128);
 const TEMP_OUTBOUND_DAILY_LIMIT = 0;
@@ -891,6 +940,40 @@ function normalizeRotatorLabel(value: unknown): string {
   return String(value || "").trim().slice(0, 60);
 }
 
+function publicRotatorOnboardingJob(job: RotatorOnboardingJob): RotatorOnboardingJob {
+  return {
+    ...job,
+    items: job.items.map((item) => ({ ...item }))
+  };
+}
+
+function rotatorOnboardingJobList(db: Db): RotatorOnboardingJob[] {
+  return Object.values(db.rotatorOnboardingJobs)
+    .map(publicRotatorOnboardingJob)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+function rotatorAccountByEmail(db: Db, email: string): RotatorAccount | undefined {
+  return Object.values(db.rotatorAccounts).find((account) => account.email.toLowerCase() === email.toLowerCase());
+}
+
+function ensureRotatorAccount(db: Db, email: string, label?: string): RotatorAccount {
+  const existing = rotatorAccountByEmail(db, email);
+  if (existing) {
+    if (label && !existing.label) existing.label = label;
+    return existing;
+  }
+  const account: RotatorAccount = {
+    id: randomToken(12),
+    label: normalizeRotatorLabel(label) || email.split("@")[0],
+    email,
+    status: "unknown",
+    createdAt: nowIso()
+  };
+  db.rotatorAccounts[account.id] = account;
+  return account;
+}
+
 function rotatorSessionKey(): Buffer {
   if (ROTATOR_SESSION_KEY.length < 32) throw new Error("Rotator session encryption is not configured.");
   return crypto.createHash("sha256").update(ROTATOR_SESSION_KEY).digest();
@@ -924,6 +1007,136 @@ function decryptRotatorSession(value: string): unknown {
   return JSON.parse(decrypted.toString("utf8"));
 }
 
+function encryptRotatorCredential(payload: unknown): string {
+  return encryptRotatorSession(payload);
+}
+
+function decryptRotatorCredential<T = any>(value: string): T {
+  return decryptRotatorSession(value) as T;
+}
+
+function credentialKey(jobId: string, itemId: string): string {
+  return `${jobId}:${itemId}`;
+}
+
+function purgeOnboardingCredential(db: Db, jobId: string, itemId: string): void {
+  delete db.rotatorOnboardingCredentials[credentialKey(jobId, itemId)];
+}
+
+function cleanupRotatorOnboardingCredentials(db: Db): boolean {
+  const cutoff = Date.now() - ROTATOR_ONBOARDING_CREDENTIAL_TTL_MS;
+  let changed = false;
+  for (const [key, credential] of Object.entries(db.rotatorOnboardingCredentials)) {
+    if (new Date(credential.createdAt).getTime() <= cutoff) {
+      delete db.rotatorOnboardingCredentials[key];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function updateOnboardingJobStatus(job: RotatorOnboardingJob): void {
+  if (job.status === "cancelled") return;
+  const terminal = job.items.every((item) => ["saved", "failed", "needs_manual"].includes(item.status));
+  job.status = terminal ? "completed" : "running";
+}
+
+function parseOnboardingItems(value: unknown): Array<{ email: string; password?: string; label?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => ({
+    email: validateEmail((item as any)?.email),
+    password: String((item as any)?.password || ""),
+    label: normalizeRotatorLabel((item as any)?.label)
+  }));
+}
+
+function zenvyImapAuthUser(email: string): string {
+  const local = email.split("@")[0];
+  return ROTATOR_ZENVY_IMAP_AUTH_FORMAT
+    .replaceAll("{email}", email)
+    .replaceAll("{local}", local)
+    .replaceAll("{masterUser}", ROTATOR_ZENVY_IMAP_MASTER_USER);
+}
+
+function isZenvyOnboardingEmail(email: string): boolean {
+  const lower = email.toLowerCase();
+  return lower.endsWith("@zenvy.com.bd") || lower.endsWith(`@${MAIL_DOMAIN.toLowerCase()}`);
+}
+
+async function fetchVerificationViaImap(authUser: string, pass: string, targetEmail: string, keyword = "openai"): Promise<VerificationMatch | undefined> {
+  const client = new ImapFlow({
+    host: MAIL_HOSTNAME,
+    port: 993,
+    secure: true,
+    auth: { user: authUser, pass },
+    logger: false,
+    tls: { rejectUnauthorized: false }
+  });
+  await client.connect();
+  const lock = await client.getMailboxLock("INBOX");
+  try {
+    const status = await client.status("INBOX", { messages: true });
+    const count = status.messages || 0;
+    if (!count) return undefined;
+    const range = `${Math.max(1, count - 24)}:${count}`;
+    const matches: VerificationMatch[] = [];
+    for await (const msg of client.fetch({ seq: range }, { source: true, envelope: true })) {
+      if (!msg.source) continue;
+      const parsed = await simpleParser(msg.source);
+      const to = parsed.to?.text || "";
+      const subject = parsed.subject || msg.envelope.subject || "";
+      const from = parsed.from?.text || formatAddressList(msg.envelope.from as Array<{ name?: string; address?: string }> | undefined);
+      const body = parsed.text || "";
+      const html = parsed.html || parsed.textAsHtml || "";
+      const haystack = `${to}\n${subject}\n${from}\n${body}\n${stripHtml(String(html || ""))}`.toLowerCase();
+      if (targetEmail && !haystack.includes(targetEmail.toLowerCase())) continue;
+      if (keyword && !haystack.includes(keyword.toLowerCase()) && !/(openai|chatgpt|code|verification|login|sign in|signin)/i.test(haystack)) continue;
+      const match = extractVerification({
+        uid: String(msg.uid),
+        subject,
+        from,
+        date: parsed.date?.toISOString() || msg.envelope.date?.toISOString() || nowIso(),
+        body,
+        html: String(html || "")
+      });
+      if (match) matches.push(match);
+    }
+    matches.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    return matches[0];
+  } finally {
+    lock.release();
+    await client.logout();
+  }
+}
+
+async function fetchZenvyOnboardingOtp(email: string): Promise<VerificationMatch | undefined> {
+  if (!ROTATOR_ZENVY_IMAP_MASTER_USER || !ROTATOR_ZENVY_IMAP_MASTER_PASSWORD) {
+    throw new Error("Zenvy onboarding IMAP master credentials are not configured.");
+  }
+  return fetchVerificationViaImap(zenvyImapAuthUser(email), ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, "openai");
+}
+
+async function fetchExternalOnboardingOtp(email: string, password: string): Promise<VerificationMatch | undefined> {
+  const tempAccount: TempInboxAccount = {
+    id: "onboarding",
+    email,
+    encPassword: encrypt(password),
+    createdAt: nowIso()
+  };
+  const result = await fetchExternalTempInbox(tempAccount, "ALL", "openai", 10);
+  const message = result.messages.find((item) => item.otp) || result.messages[0];
+  if (!message?.otp) return undefined;
+  return {
+    uid: message.id,
+    subject: message.subject,
+    from: message.from,
+    code: message.otp,
+    serviceHint: serviceHintFrom(message.from, message.subject),
+    date: message.date,
+    confidence: 0.94
+  };
+}
+
 async function ensureDb(): Promise<void> {
   await fs.mkdir(DB_DIR, { recursive: true });
   try {
@@ -938,6 +1151,8 @@ async function ensureDb(): Promise<void> {
       rotatorAccounts: {},
       rotatorDevices: {},
       rotatorSessions: {},
+      rotatorOnboardingJobs: {},
+      rotatorOnboardingCredentials: {},
       rotatorAudit: [],
       audit: []
     };
@@ -957,6 +1172,8 @@ async function readDb(): Promise<Db> {
   db.rotatorAccounts ||= {};
   db.rotatorDevices ||= {};
   db.rotatorSessions ||= {};
+  db.rotatorOnboardingJobs ||= {};
+  db.rotatorOnboardingCredentials ||= {};
   db.rotatorAudit ||= [];
   db.audit ||= [];
   db.rotatorAudit = db.rotatorAudit.slice(0, 1000);
@@ -1689,6 +1906,17 @@ function startTempInboxForwardingWorker(): void {
   }, TEMP_INBOX_BACKGROUND_POLL_MS).unref();
 }
 
+function startRotatorOnboardingCredentialPurgeWorker(): void {
+  setInterval(() => {
+    withDbMutation(async () => {
+      const db = await readDb();
+      if (cleanupRotatorOnboardingCredentials(db)) await writeDb(db);
+    }).catch((error) => {
+      console.error("rotator_onboarding_credential_purge_failed", error);
+    });
+  }, 60_000).unref();
+}
+
 async function deleteMailuAlias(alias: MailAlias): Promise<MailuCreateResult> {
   if (MAILU_DRY_RUN) return { provider: "dry-run", message: "MAILU_DRY_RUN is enabled; no Mailu alias delete call was made." };
   const base = env.MAILU_API_BASE;
@@ -2091,6 +2319,217 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
   const isAdmin = requireRotatorAdmin(req);
   const device = getRotatorDevice(req, db);
 
+  if (url.pathname === "/api/rotator/onboarding/jobs") {
+    if (!isAdmin && !device) return json(res, 401, { error: "Rotator authorization required." });
+
+    if (req.method === "GET") {
+      if (device) await writeDb(db);
+      return json(res, 200, { jobs: rotatorOnboardingJobList(db) });
+    }
+
+    if (!isAdmin) return json(res, 401, { error: "Admin token required." });
+    if (req.method === "POST") {
+      const body = await parseBody(req);
+      const requestedItems = parseOnboardingItems(Array.isArray(body) ? body : body.items);
+      if (!requestedItems.length) return json(res, 400, { error: "At least one onboarding item is required." });
+      if (requestedItems.length > ROTATOR_ONBOARDING_MAX_ITEMS) return json(res, 400, { error: `Onboarding jobs are limited to ${ROTATOR_ONBOARDING_MAX_ITEMS} accounts.` });
+      if (requestedItems.some((item) => !item.email)) return json(res, 400, { error: "Every onboarding item needs a valid email." });
+
+      const job: RotatorOnboardingJob = {
+        id: randomToken(12),
+        createdAt: nowIso(),
+        status: "running",
+        items: []
+      };
+
+      requestedItems.forEach((item, index) => {
+        const account = ensureRotatorAccount(db, item.email, item.label || `acct-${index + 1}`);
+        const onboardingItem: RotatorOnboardingItem = {
+          id: randomToken(10),
+          accountId: account.id,
+          email: item.email,
+          hasPassword: Boolean(item.password),
+          label: item.label || account.label,
+          status: "queued",
+          attempts: 0
+        };
+        job.items.push(onboardingItem);
+        db.rotatorOnboardingCredentials[credentialKey(job.id, onboardingItem.id)] = {
+          jobId: job.id,
+          itemId: onboardingItem.id,
+          encryptedPayload: encryptRotatorCredential({ email: item.email, password: item.password || "", label: item.label || account.label }),
+          createdAt: nowIso()
+        };
+      });
+
+      db.rotatorOnboardingJobs[job.id] = job;
+      await audit(db, "admin", "rotator_onboarding_job_created", { jobId: job.id, count: job.items.length });
+      await writeDb(db);
+      return json(res, 201, { job: publicRotatorOnboardingJob(job) });
+    }
+  }
+
+  const onboardingJobRoute = url.pathname.match(/^\/api\/rotator\/onboarding\/jobs\/([^/]+)$/);
+  if (onboardingJobRoute) {
+    if (!isAdmin && !device) return json(res, 401, { error: "Rotator authorization required." });
+    const jobId = decodeURIComponent(onboardingJobRoute[1]);
+    const job = db.rotatorOnboardingJobs[jobId];
+    if (!job) return json(res, 404, { error: "Onboarding job not found." });
+
+    if (req.method === "GET") {
+      if (device) await writeDb(db);
+      return json(res, 200, { job: publicRotatorOnboardingJob(job) });
+    }
+
+    if (req.method === "DELETE") {
+      if (!isAdmin) return json(res, 401, { error: "Admin token required." });
+      job.status = "cancelled";
+      for (const item of job.items) {
+        if (item.status === "queued" || item.status === "logging_in" || item.status === "awaiting_otp" || item.status === "verifying") {
+          item.status = "needs_manual";
+          item.errorReason = "unknown_error";
+          item.completedAt = nowIso();
+        }
+        purgeOnboardingCredential(db, job.id, item.id);
+      }
+      await audit(db, "admin", "rotator_onboarding_job_cancelled", { jobId });
+      await writeDb(db);
+      return json(res, 200, { job: publicRotatorOnboardingJob(job) });
+    }
+  }
+
+  const onboardingNextRoute = url.pathname.match(/^\/api\/rotator\/onboarding\/jobs\/([^/]+)\/next$/);
+  if (onboardingNextRoute) {
+    if (!device) return json(res, 401, { error: "Device token required." });
+    if (req.method !== "GET") return json(res, 404, { error: "Not found." });
+    if (!rateLimitKey(`rotator-onboarding-next:${device.id}`, 60, 15 * 60 * 1000)) {
+      await writeDb(db);
+      return json(res, 429, { error: "Too many onboarding claims. Try again later." });
+    }
+    const jobId = decodeURIComponent(onboardingNextRoute[1]);
+    const job = db.rotatorOnboardingJobs[jobId];
+    if (!job) return json(res, 404, { error: "Onboarding job not found." });
+    if (job.status !== "running") {
+      await writeDb(db);
+      return json(res, 200, { item: null, job: publicRotatorOnboardingJob(job) });
+    }
+
+    const item = job.items.find((candidate) => candidate.status === "queued");
+    if (!item) {
+      updateOnboardingJobStatus(job);
+      await writeDb(db);
+      return json(res, 200, { item: null, job: publicRotatorOnboardingJob(job) });
+    }
+
+    const credential = db.rotatorOnboardingCredentials[credentialKey(job.id, item.id)];
+    if (!credential) {
+      item.status = "needs_manual";
+      item.errorReason = "unknown_error";
+      item.completedAt = nowIso();
+      updateOnboardingJobStatus(job);
+      await writeDb(db);
+      return json(res, 409, { error: "Onboarding credentials expired. Create a retry job.", item, job: publicRotatorOnboardingJob(job) });
+    }
+
+    const payload = decryptRotatorCredential<{ email: string; password?: string; label?: string }>(credential.encryptedPayload);
+    item.status = "logging_in";
+    item.attempts += 1;
+    item.claimedByDeviceId = device.id;
+    item.claimedAt = nowIso();
+    db.rotatorAudit.unshift({
+      id: randomToken(10),
+      at: nowIso(),
+      deviceId: device.id,
+      accountId: item.accountId,
+      jobId: job.id,
+      itemId: item.id,
+      event: "onboarding_credential_claimed"
+    });
+    db.rotatorAudit = db.rotatorAudit.slice(0, 1000);
+    await writeDb(db);
+    return json(res, 200, {
+      item: {
+        id: item.id,
+        accountId: item.accountId,
+        email: payload.email,
+        password: payload.password || "",
+        label: payload.label || item.label || "",
+        hasPassword: Boolean(payload.password)
+      },
+      job: publicRotatorOnboardingJob(job)
+    });
+  }
+
+  const onboardingOtpRoute = url.pathname.match(/^\/api\/rotator\/onboarding\/jobs\/([^/]+)\/items\/([^/]+)\/otp$/);
+  if (onboardingOtpRoute) {
+    if (!device) return json(res, 401, { error: "Device token required." });
+    if (req.method !== "GET") return json(res, 404, { error: "Not found." });
+    const jobId = decodeURIComponent(onboardingOtpRoute[1]);
+    const itemId = decodeURIComponent(onboardingOtpRoute[2]);
+    const job = db.rotatorOnboardingJobs[jobId];
+    const item = job?.items.find((candidate) => candidate.id === itemId);
+    if (!job || !item) return json(res, 404, { error: "Onboarding item not found." });
+    if (item.claimedByDeviceId !== device.id) return json(res, 403, { error: "This item is claimed by another device." });
+    const credential = db.rotatorOnboardingCredentials[credentialKey(jobId, itemId)];
+    if (!credential) return json(res, 409, { error: "Onboarding credentials expired. Create a retry job." });
+    const payload = decryptRotatorCredential<{ email: string; password?: string }>(credential.encryptedPayload);
+    item.status = "awaiting_otp";
+    await writeDb(db);
+
+    try {
+      if (!isZenvyOnboardingEmail(payload.email) && !payload.password) {
+        return json(res, 400, { error: "This onboarding item needs a password to fetch OTP." });
+      }
+      const match = isZenvyOnboardingEmail(payload.email)
+        ? await fetchZenvyOnboardingOtp(payload.email)
+        : await fetchExternalOnboardingOtp(payload.email, payload.password || "");
+      db.rotatorAudit.unshift({
+        id: randomToken(10),
+        at: nowIso(),
+        deviceId: device.id,
+        accountId: item.accountId,
+        jobId,
+        itemId,
+        event: "onboarding_otp_fetch"
+      });
+      db.rotatorAudit = db.rotatorAudit.slice(0, 1000);
+      await writeDb(db);
+      if (!match?.code) return json(res, 404, { error: "No OTP found yet." });
+      return json(res, 200, {
+        code: match.code,
+        match: { subject: match.subject, from: match.from, date: match.date, confidence: match.confidence }
+      });
+    } catch (error) {
+      await writeDb(db);
+      return json(res, 502, { error: error instanceof Error ? error.message : "OTP fetch failed." });
+    }
+  }
+
+  const onboardingResultRoute = url.pathname.match(/^\/api\/rotator\/onboarding\/jobs\/([^/]+)\/items\/([^/]+)\/result$/);
+  if (onboardingResultRoute) {
+    if (!device) return json(res, 401, { error: "Device token required." });
+    if (req.method !== "POST") return json(res, 404, { error: "Not found." });
+    const jobId = decodeURIComponent(onboardingResultRoute[1]);
+    const itemId = decodeURIComponent(onboardingResultRoute[2]);
+    const job = db.rotatorOnboardingJobs[jobId];
+    const item = job?.items.find((candidate) => candidate.id === itemId);
+    if (!job || !item) return json(res, 404, { error: "Onboarding item not found." });
+    if (item.claimedByDeviceId !== device.id) return json(res, 403, { error: "This item is claimed by another device." });
+    const body = await parseBody(req);
+    const status = String(body.status || "");
+    if (!["saved", "failed", "needs_manual"].includes(status)) return json(res, 400, { error: "Result status must be saved, failed, or needs_manual." });
+    const errorReason = String(body.errorReason || "") as RotatorOnboardingErrorReason;
+    item.status = status as RotatorOnboardingItemStatus;
+    if (status !== "saved" && errorReason) item.errorReason = errorReason;
+    if (status === "saved") delete item.errorReason;
+    item.completedAt = nowIso();
+    purgeOnboardingCredential(db, jobId, itemId);
+    updateOnboardingJobStatus(job);
+    await audit(db, device.id, "rotator_onboarding_item_result", { jobId, itemId, status, errorReason: status === "saved" ? undefined : errorReason });
+    await writeDb(db);
+    return json(res, 200, { item, job: publicRotatorOnboardingJob(job) });
+  }
+
   if (url.pathname === "/api/rotator/devices") {
     if (!isAdmin) return json(res, 401, { error: "Admin token required." });
 
@@ -2284,6 +2723,7 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const db = await readDb();
   await cleanupExpiredTempMailboxes(db);
+  if (cleanupRotatorOnboardingCredentials(db)) await writeDb(db);
 
   if (url.pathname.startsWith("/api/rotator")) {
     return handleRotatorApi(req, res, url, db);
@@ -3181,6 +3621,7 @@ export { handle };
 await ensureDb();
 if (env.MAILROOM_NO_LISTEN !== "true") {
   startTempInboxForwardingWorker();
+  startRotatorOnboardingCredentialPurgeWorker();
   http.createServer(handle).listen(PORT, () => {
     console.log(`Invite mail portal running at http://localhost:${PORT}`);
     console.log(`Domain: ${MAIL_DOMAIN}; Mailu dry-run: ${MAILU_DRY_RUN}`);

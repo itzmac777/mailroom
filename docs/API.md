@@ -121,3 +121,47 @@ Device-token only.
 ### `GET /api/rotator/audit`
 
 Admin-only. Returns recent session-fetch audit entries.
+
+### `POST /api/rotator/onboarding/jobs`
+
+Admin-only. Creates a bulk onboarding job with up to 10 items. Passwords are
+encrypted immediately and never returned.
+
+```json
+{
+  "items": [
+    { "email": "acct@zenvy.com.bd", "label": "acct-1" },
+    { "email": "acct@outlook.com", "password": "inbox-password", "label": "acct-2" }
+  ]
+}
+```
+
+### `GET /api/rotator/onboarding/jobs`
+
+Admin or device token. Lists onboarding jobs and item progress without
+credential payloads.
+
+### `GET /api/rotator/onboarding/jobs/:id`
+
+Admin or device token. Returns one onboarding job without credential payloads.
+
+### `GET /api/rotator/onboarding/jobs/:id/next`
+
+Device-token only. Atomically claims the next queued item, audits the credential
+read, and returns the decrypted item to the extension runner. Rate-limited per
+device.
+
+### `GET /api/rotator/onboarding/jobs/:id/items/:itemId/otp`
+
+Device-token only. Fetches the latest OpenAI verification code for the claimed
+item. Local domain mailboxes use the rotator IMAP master credentials; external
+mailboxes use the existing temp-inbox fetch path.
+
+### `POST /api/rotator/onboarding/jobs/:id/items/:itemId/result`
+
+Device-token only. Marks a claimed item `saved`, `failed`, or `needs_manual`.
+The stored credential for that item is purged regardless of result.
+
+### `DELETE /api/rotator/onboarding/jobs/:id`
+
+Admin-only. Cancels a job and immediately purges remaining credentials.

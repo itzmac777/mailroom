@@ -104,8 +104,32 @@ export type RotatorAuditEntry = {
   id: string;
   at: string;
   deviceId: string;
+  accountId?: string;
+  jobId?: string;
+  itemId?: string;
+  event: "session_fetched" | "onboarding_credential_claimed" | "onboarding_otp_fetch";
+};
+
+export type RotatorOnboardingItem = {
+  id: string;
   accountId: string;
-  event: "session_fetched";
+  email: string;
+  hasPassword: boolean;
+  label?: string;
+  status: "queued" | "logging_in" | "awaiting_otp" | "verifying" | "saved" | "failed" | "needs_manual";
+  errorReason?: "wrong_password" | "otp_timeout" | "captcha_encountered" | "unexpected_page" | "unknown_error" | "missing_password" | "otp_not_found";
+  attempts: number;
+  claimedByDeviceId?: string;
+  claimedAt?: string;
+  completedAt?: string;
+};
+
+export type RotatorOnboardingJob = {
+  id: string;
+  createdAt: string;
+  status: "running" | "completed" | "cancelled";
+  createdByDevice?: string;
+  items: RotatorOnboardingItem[];
 };
 
 export type EmailMessage = {

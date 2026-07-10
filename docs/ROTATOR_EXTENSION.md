@@ -49,3 +49,18 @@ Saved sessions can expire or be invalidated by ChatGPT. If activation reports
 
 If activation says a saved cookie is missing its domain, reload the updated
 extension, log in manually once, and save that account's session again.
+
+## Run Bulk Onboarding
+
+1. Create a bulk onboarding job from `/admin/rotator`.
+2. Open the extension popup on a computer with a valid device token.
+3. Click "Start" on the queued onboarding job.
+
+The extension opens one ChatGPT login tab at a time, submits the email and
+password when one was supplied, asks Mailroom for the OTP, saves the resulting
+cookie snapshot through the normal session endpoint, then waits 5-15 seconds
+before the next account.
+
+If ChatGPT shows a CAPTCHA or an unfamiliar verification step, the item is
+marked `needs_manual`. Repeated CAPTCHA challenges pause the runner so the
+browser does not keep hammering the login flow.

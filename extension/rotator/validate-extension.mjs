@@ -9,12 +9,14 @@ const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "ut
 assert.equal(manifest.manifest_version, 3);
 assert.equal(manifest.action.default_popup, "popup.html");
 assert.equal(manifest.options_page, "options.html");
+assert.equal(manifest.background.service_worker, "background-entry.js");
 assert.ok(manifest.permissions.includes("cookies"));
 assert.ok(manifest.permissions.includes("storage"));
 assert.ok(manifest.permissions.includes("tabs"));
 assert.ok(manifest.host_permissions.includes("https://chatgpt.com/*"));
 assert.ok(manifest.host_permissions.includes("https://*.openai.com/*"));
 assert.ok(manifest.optional_host_permissions.includes("https://*/*"));
+assert.ok(manifest.content_scripts.some((script) => script.js.includes("content-script.js")));
 
 const shared = await readFile(path.join(root, "shared.js"), "utf8");
 assert.match(shared, /chrome\.storage\.local/);
@@ -26,7 +28,18 @@ assert.match(shared, /backend-api\/me/);
 
 const popup = await readFile(path.join(root, "popup.js"), "utf8");
 assert.match(popup, /\/api\/rotator\/accounts/);
+assert.match(popup, /\/api\/rotator\/onboarding\/jobs/);
 assert.match(popup, /\/session/);
 assert.match(popup, /mark-status/);
+
+const background = await readFile(path.join(root, "background.js"), "utf8");
+assert.match(background, /\/api\/rotator\/onboarding\/jobs/);
+assert.match(background, /\/next/);
+assert.match(background, /\/otp/);
+assert.match(background, /captcha_encountered/);
+
+const contentScript = await readFile(path.join(root, "content-script.js"), "utf8");
+assert.match(contentScript, /rotatorSubmitEmail/);
+assert.match(contentScript, /rotatorSubmitOtp/);
 
 console.log("Extension manifest and rotator flows look valid.");

@@ -69,11 +69,52 @@ test("rotator device, account, session, audit, and revocation flow", async () =>
     const deviceToken = createdDevice.payload.token;
     const deviceHeaders = { authorization: `Bearer ${deviceToken}` };
 
+    const tooLargeJob = await request(baseUrl, "/api/rotator/onboarding/jobs", {
+      method: "POST",
+      headers: { "x-admin-token": adminToken },
+      body: JSON.stringify(Array.from({ length: 11 }, (_, index) => ({ email: `bulk${index}@example.com` })))
+    });
+    assert.equal(tooLargeJob.response.status, 400);
+
+    const createdJob = await request(baseUrl, "/api/rotator/onboarding/jobs", {
+      method: "POST",
+      headers: { "x-admin-token": adminToken },
+      body: JSON.stringify([
+        { email: "bulk-zenvy@example.com", label: "bulk-1" },
+        { email: "bulk-outlook@outlook.com", password: "secret-password", label: "bulk-2" }
+      ])
+    });
+    assert.equal(createdJob.response.status, 201);
+    assert.equal(createdJob.payload.job.items.length, 2);
+    assert.equal(createdJob.payload.job.items[1].hasPassword, true);
+    assert.equal(createdJob.payload.job.items[1].password, undefined);
+
+    const rawDbWithCredentials = await readFile(dbPath, "utf8");
+    assert.equal(rawDbWithCredentials.includes("secret-password"), false);
+
+    const claimedItem = await request(baseUrl, `/api/rotator/onboarding/jobs/${createdJob.payload.job.id}/next`, {
+      headers: deviceHeaders
+    });
+    assert.equal(claimedItem.response.status, 200);
+    assert.equal(claimedItem.payload.item.email, "bulk-zenvy@example.com");
+    assert.equal(claimedItem.payload.item.password, "");
+    assert.equal(claimedItem.payload.job.items[0].status, "logging_in");
+
+    const completedItem = await request(baseUrl, `/api/rotator/onboarding/jobs/${createdJob.payload.job.id}/items/${claimedItem.payload.item.id}/result`, {
+      method: "POST",
+      headers: deviceHeaders,
+      body: JSON.stringify({ status: "saved" })
+    });
+    assert.equal(completedItem.response.status, 200);
+    assert.equal(completedItem.payload.item.status, "saved");
+    const rawDbAfterResult = JSON.parse(await readFile(dbPath, "utf8"));
+    assert.equal(rawDbAfterResult.rotatorOnboardingCredentials[`${createdJob.payload.job.id}:${claimedItem.payload.item.id}`], undefined);
+
     const listedAccounts = await request(baseUrl, "/api/rotator/accounts", {
       headers: deviceHeaders
     });
     assert.equal(listedAccounts.response.status, 200);
-    assert.equal(listedAccounts.payload.accounts.length, 1);
+    assert.equal(listedAccounts.payload.accounts.length, 3);
 
     const cookieSnapshot = [
       {
@@ -115,9 +156,10 @@ test("rotator device, account, session, audit, and revocation flow", async () =>
       headers: { "x-admin-token": adminToken }
     });
     assert.equal(audit.response.status, 200);
-    assert.equal(audit.payload.audit.length, 1);
-    assert.equal(audit.payload.audit[0].event, "session_fetched");
-    assert.equal(audit.payload.audit[0].accountId, accountId);
+    const sessionFetchAudit = audit.payload.audit.find((entry: any) => entry.event === "session_fetched");
+    const credentialClaimAudit = audit.payload.audit.find((entry: any) => entry.event === "onboarding_credential_claimed");
+    assert.equal(sessionFetchAudit.accountId, accountId);
+    assert.equal(credentialClaimAudit.jobId, createdJob.payload.job.id);
 
     const updatedAccount = await request(baseUrl, `/api/rotator/accounts/${accountId}`, {
       method: "PATCH",

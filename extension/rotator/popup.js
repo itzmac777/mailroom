@@ -4,8 +4,12 @@ const saveSessionButton = document.querySelector("#save-session");
 const refreshButton = document.querySelector("#refresh");
 const optionsButton = document.querySelector("#options-button");
 const statusEl = document.querySelector("#status");
+const jobsEl = document.querySelector("#jobs");
+const runnerStatusEl = document.querySelector("#runner-status");
+const stopOnboardingButton = document.querySelector("#stop-onboarding");
 
 let accounts = [];
+let jobs = [];
 
 function setStatus(message, kind = "") {
   statusEl.textContent = message;
@@ -58,16 +62,61 @@ function renderAccounts() {
   }
 }
 
-async function loadAccounts() {
+function renderJobs() {
+  jobsEl.innerHTML = "";
+  const runnable = jobs.filter((job) => job.status === "running" && job.items.some((item) => item.status === "queued"));
+  if (!jobs.length) {
+    jobsEl.innerHTML = '<p class="hint">No onboarding jobs. Create one from /admin/rotator.</p>';
+    return;
+  }
+
+  for (const job of jobs.slice(0, 5)) {
+    const counts = job.items.reduce((summary, item) => {
+      summary[item.status] = (summary[item.status] || 0) + 1;
+      return summary;
+    }, {});
+    const queued = counts.queued || 0;
+    const saved = counts.saved || 0;
+    const failed = (counts.failed || 0) + (counts.needs_manual || 0);
+    const item = document.createElement("article");
+    item.className = "account";
+    item.innerHTML = `
+      <div>
+        <strong></strong>
+        <p></p>
+        <span class="${job.status === "completed" ? "badge active" : "badge"}">${job.status}</span>
+      </div>
+      <button type="button" ${queued ? "" : "disabled"}>Start</button>
+      <p class="meta">Saved ${saved} · Failed/manual ${failed} · Queued ${queued}</p>
+    `;
+    item.querySelector("strong").textContent = `Job ${job.id.slice(0, 8)}`;
+    item.querySelector("p").textContent = `${job.items.length} account(s) · ${formatDate(job.createdAt)}`;
+    item.querySelector("button").addEventListener("click", () => startOnboarding(job.id));
+    jobsEl.append(item);
+  }
+
+  if (!runnable.length && jobs.some((job) => job.status === "running")) {
+    runnerStatusEl.textContent = "No queued items are waiting in the current jobs.";
+  }
+}
+
+async function loadData() {
   setStatus("Loading accounts...");
   try {
-    const result = await mailroomFetch("/api/rotator/accounts");
-    accounts = result.accounts || [];
+    const [accountResult, jobResult] = await Promise.all([
+      mailroomFetch("/api/rotator/accounts"),
+      mailroomFetch("/api/rotator/onboarding/jobs")
+    ]);
+    accounts = accountResult.accounts || [];
+    jobs = jobResult.jobs || [];
     renderAccounts();
+    renderJobs();
     setStatus("Ready.", "ok");
   } catch (error) {
     accounts = [];
+    jobs = [];
     renderAccounts();
+    renderJobs();
     setStatus(error instanceof Error ? error.message : "Could not load accounts.", "error");
   }
 }
@@ -83,7 +132,7 @@ async function saveCurrentSession() {
       method: "POST",
       body: JSON.stringify(cookies)
     });
-    await loadAccounts();
+    await loadData();
     setStatus(`Saved ${cookies.length} cookie(s).`, "ok");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Could not save session.", "error");
@@ -110,7 +159,7 @@ async function activateAccount(account) {
     await openOrReloadChatGPT();
     const loggedIn = await verifyChatGPTLogin();
     await markStatus(account.id, loggedIn ? "active" : "needs_relogin");
-    await loadAccounts();
+    await loadData();
     setStatus(loggedIn ? `${account.label} is active.` : `${account.label} needs login again.`, loggedIn ? "ok" : "error");
   } catch (error) {
     snapshot = null;
@@ -118,8 +167,43 @@ async function activateAccount(account) {
   }
 }
 
-saveSessionButton.addEventListener("click", () => saveCurrentSession());
-refreshButton.addEventListener("click", () => loadAccounts());
-optionsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
+async function startOnboarding(jobId) {
+  runnerStatusEl.textContent = "Starting onboarding runner...";
+  const response = await chrome.runtime.sendMessage({ type: "startOnboarding", jobId });
+  renderRunnerState(response?.state);
+}
 
-loadAccounts();
+async function stopOnboarding() {
+  const response = await chrome.runtime.sendMessage({ type: "stopOnboarding" });
+  renderRunnerState(response?.state);
+}
+
+function renderRunnerState(state) {
+  if (!state) return;
+  runnerStatusEl.textContent = state.current ? `${state.message} (${state.current})` : state.message;
+  stopOnboardingButton.disabled = !state.running;
+}
+
+async function loadRunnerState() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "getOnboardingState" });
+    renderRunnerState(response?.state);
+  } catch {
+    runnerStatusEl.textContent = "Runner unavailable.";
+  }
+}
+
+saveSessionButton.addEventListener("click", () => saveCurrentSession());
+refreshButton.addEventListener("click", () => loadData());
+optionsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
+stopOnboardingButton.addEventListener("click", () => stopOnboarding());
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "onboardingState") {
+    renderRunnerState(message.state);
+    if (!message.state.running) loadData();
+  }
+});
+
+loadData();
+loadRunnerState();

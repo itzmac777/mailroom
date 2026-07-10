@@ -26,7 +26,7 @@ async function saveSettings(settings) {
 
 function backendOriginPattern(baseUrl) {
   const url = new URL(baseUrl);
-  return `${url.protocol}//${url.hostname}/*`;
+  return `${url.origin}/*`;
 }
 
 async function requestBackendPermission(baseUrl) {
