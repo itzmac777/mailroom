@@ -1058,8 +1058,12 @@ function parseOnboardingItems(value: unknown): Array<{ email: string; password?:
 }
 
 function zenvyImapAuthUser(email: string): string {
+  return zenvyImapAuthUserForFormat(email, ROTATOR_ZENVY_IMAP_AUTH_FORMAT);
+}
+
+function zenvyImapAuthUserForFormat(email: string, format: string): string {
   const local = email.split("@")[0];
-  return ROTATOR_ZENVY_IMAP_AUTH_FORMAT
+  return format
     .replaceAll("{email}", email)
     .replaceAll("{local}", local)
     .replaceAll("{masterUser}", ROTATOR_ZENVY_IMAP_MASTER_USER);
@@ -1114,6 +1118,81 @@ async function fetchVerificationViaImap(authUser: string, pass: string, targetEm
     lock.release();
     await client.logout();
   }
+}
+
+function cleanImapError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "IMAP request failed.");
+  return message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+async function testVerificationViaImap(authUser: string, pass: string, targetEmail: string, keyword = "openai"): Promise<{
+  ok: boolean;
+  authUser: string;
+  messages?: number;
+  codeFound?: boolean;
+  match?: { subject: string; from: string; date: string; confidence: number };
+  error?: string;
+}> {
+  const client = new ImapFlow({
+    host: MAIL_HOSTNAME,
+    port: 993,
+    secure: true,
+    auth: { user: authUser, pass },
+    logger: false,
+    tls: { rejectUnauthorized: false }
+  });
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      const status = await client.status("INBOX", { messages: true });
+      const match = await fetchVerificationViaConnectedImap(client, targetEmail, keyword, status.messages || 0);
+      return {
+        ok: true,
+        authUser,
+        messages: status.messages || 0,
+        codeFound: Boolean(match?.code),
+        match: match
+          ? { subject: match.subject, from: match.from, date: match.date, confidence: match.confidence }
+          : undefined
+      };
+    } finally {
+      lock.release();
+    }
+  } catch (error) {
+    return { ok: false, authUser, error: cleanImapError(error) };
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+}
+
+async function fetchVerificationViaConnectedImap(client: ImapFlow, targetEmail: string, keyword: string, count: number): Promise<VerificationMatch | undefined> {
+  if (!count) return undefined;
+  const range = `${Math.max(1, count - 24)}:${count}`;
+  const matches: VerificationMatch[] = [];
+  for await (const msg of client.fetch({ seq: range }, { source: true, envelope: true })) {
+    if (!msg.source) continue;
+    const parsed = await simpleParser(msg.source);
+    const to = parsed.to?.text || "";
+    const subject = parsed.subject || msg.envelope.subject || "";
+    const from = parsed.from?.text || formatAddressList(msg.envelope.from as Array<{ name?: string; address?: string }> | undefined);
+    const body = parsed.text || "";
+    const html = parsed.html || parsed.textAsHtml || "";
+    const haystack = `${to}\n${subject}\n${from}\n${body}\n${stripHtml(String(html || ""))}`.toLowerCase();
+    if (targetEmail && !haystack.includes(targetEmail.toLowerCase())) continue;
+    if (keyword && !haystack.includes(keyword.toLowerCase()) && !/(openai|chatgpt|code|verification|login|sign in|signin)/i.test(haystack)) continue;
+    const match = extractVerification({
+      uid: String(msg.uid),
+      subject,
+      from,
+      date: parsed.date?.toISOString() || msg.envelope.date?.toISOString() || nowIso(),
+      body,
+      html: String(html || "")
+    });
+    if (match) matches.push(match);
+  }
+  matches.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  return matches[0];
 }
 
 async function fetchZenvyOnboardingOtp(email: string): Promise<VerificationMatch | undefined> {
@@ -2328,6 +2407,46 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: 
 async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: URL, db: Db): Promise<void> {
   const isAdmin = requireRotatorAdmin(req);
   const device = getRotatorDevice(req, db);
+
+  if (url.pathname === "/api/rotator/onboarding/imap-test") {
+    if (!isAdmin) return json(res, 401, { error: "Admin token required." });
+    if (req.method !== "GET") return json(res, 404, { error: "Not found." });
+    const email = validateEmail(url.searchParams.get("email"));
+    const keyword = String(url.searchParams.get("keyword") || "openai").trim().slice(0, 80) || "openai";
+    if (!email) return json(res, 400, { error: "A valid email query parameter is required." });
+    if (!isZenvyOnboardingEmail(email)) return json(res, 400, { error: `Email must belong to ${MAIL_DOMAIN} or zenvy.com.bd.` });
+    if (!ROTATOR_ZENVY_IMAP_MASTER_USER || !ROTATOR_ZENVY_IMAP_MASTER_PASSWORD) {
+      return json(res, 500, { error: "Zenvy onboarding IMAP master credentials are not configured." });
+    }
+    if (ROTATOR_ZENVY_IMAP_MASTER_PASSWORD === "your-master-imap-password") {
+      return json(res, 500, { error: "ROTATOR_ZENVY_IMAP_MASTER_PASSWORD is still set to the example placeholder." });
+    }
+
+    const formats = Array.from(new Set([
+      ROTATOR_ZENVY_IMAP_AUTH_FORMAT,
+      "{email}*{masterUser}",
+      "{local}*{masterUser}",
+      "{masterUser}*{email}",
+      "{masterUser}*{local}"
+    ]));
+    const attempts = [];
+    for (const format of formats) {
+      const authUser = zenvyImapAuthUserForFormat(email, format);
+      const result = await testVerificationViaImap(authUser, ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, keyword);
+      attempts.push({ format, ...result });
+    }
+    const working = attempts.find((attempt) => attempt.ok);
+    return json(res, 200, {
+      ok: Boolean(working),
+      host: MAIL_HOSTNAME,
+      port: 993,
+      targetEmail: email,
+      masterUser: ROTATOR_ZENVY_IMAP_MASTER_USER,
+      configuredFormat: ROTATOR_ZENVY_IMAP_AUTH_FORMAT,
+      workingFormat: working?.format || null,
+      attempts
+    });
+  }
 
   if (url.pathname === "/api/rotator/onboarding/jobs") {
     if (!isAdmin && !device) return json(res, 401, { error: "Rotator authorization required." });

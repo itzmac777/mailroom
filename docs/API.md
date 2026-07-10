@@ -157,6 +157,14 @@ Device-token only. Fetches the latest OpenAI verification code for the claimed
 item. Local domain mailboxes use the rotator IMAP master credentials; external
 mailboxes use the existing temp-inbox fetch path.
 
+### `GET /api/rotator/onboarding/imap-test?email=:email`
+
+Admin-only. Tests local-domain IMAP access for one onboarding mailbox without
+returning passwords, message bodies, or raw OTPs. The response includes the
+configured auth format, common Dovecot master-user format attempts, the computed
+IMAP usernames, auth/status success or sanitized failures, and whether an OpenAI
+verification message was found.
+
 ### `POST /api/rotator/onboarding/jobs/:id/items/:itemId/result`
 
 Device-token only. Marks a claimed item `saved`, `failed`, or `needs_manual`.

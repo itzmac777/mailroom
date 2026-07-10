@@ -76,6 +76,14 @@ test("rotator device, account, session, audit, and revocation flow", async () =>
     });
     assert.equal(tooLargeJob.response.status, 400);
 
+    const deniedImapTest = await request(baseUrl, "/api/rotator/onboarding/imap-test?email=bulk-zenvy@example.com");
+    assert.equal(deniedImapTest.response.status, 401);
+
+    const invalidImapTest = await request(baseUrl, "/api/rotator/onboarding/imap-test?email=not-an-email", {
+      headers: { "x-admin-token": adminToken }
+    });
+    assert.equal(invalidImapTest.response.status, 400);
+
     const createdJob = await request(baseUrl, "/api/rotator/onboarding/jobs", {
       method: "POST",
       headers: { "x-admin-token": adminToken },
