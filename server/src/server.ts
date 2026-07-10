@@ -1274,6 +1274,10 @@ async function resetMailuMailboxPassword(email: string, password: string): Promi
       notFoundDetails.push(`${identifier}: ${text.slice(0, 180)}`);
       continue;
     }
+    if (identifier === local && response.status === 400 && /not a valid email address/i.test(text)) {
+      notFoundDetails.push(`${identifier}: localpart lookup is not supported by this Mailu API`);
+      continue;
+    }
     throw new Error(`Mailu password reset failed with ${response.status}: ${text.slice(0, 300)}`);
   }
 
