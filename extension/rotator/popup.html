@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mailroom Rotator</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body class="popup">
+    <main class="popup-shell">
+      <header class="popup-head">
+        <div>
+          <p class="eyebrow">Mailroom</p>
+          <h1>Rotator</h1>
+        </div>
+        <button id="options-button" class="ghost" type="button">Options</button>
+      </header>
+
+      <section class="panel compact">
+        <div class="row">
+          <select id="save-account"></select>
+          <button id="save-session" type="button">Save this session</button>
+        </div>
+        <p class="hint">Log in to ChatGPT first, then save cookies to the selected identity.</p>
+      </section>
+
+      <section class="panel compact">
+        <div class="row between">
+          <strong>Accounts</strong>
+          <button id="refresh" class="ghost" type="button">Refresh</button>
+        </div>
+        <div id="accounts" class="accounts"></div>
+      </section>
+
+      <p id="status" class="status">Loading...</p>
+    </main>
+    <script src="shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

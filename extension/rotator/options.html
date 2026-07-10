@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mailroom Rotator Options</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <p class="eyebrow">Mailroom</p>
+        <h1>Device setup</h1>
+        <form id="settings-form" class="stack">
+          <label>
+            Backend URL
+            <input id="backend-url" name="backendUrl" placeholder="https://portal.example.com" autocomplete="url" required>
+          </label>
+          <label>
+            Device token
+            <input id="device-token" name="deviceToken" type="password" autocomplete="off" required>
+          </label>
+          <button type="submit">Save and test</button>
+        </form>
+        <p id="status" class="status">Paste the token issued from /admin/rotator.</p>
+      </section>
+    </main>
+    <script src="shared.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

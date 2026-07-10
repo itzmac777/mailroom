@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Mailroom ChatGPT Rotator",
+  "version": "0.1.0",
+  "description": "Save and activate ChatGPT account sessions through Mailroom device tokens.",
+  "permissions": [
+    "cookies",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://*.openai.com/*",
+    "https://openai.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "action": {
+    "default_title": "Mailroom Rotator",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html"
+}
