@@ -76,6 +76,7 @@ async function saveOnboardedSession(item) {
 
 async function processOnboardingItem(jobId, item) {
   let tabId = null;
+  let reachedOtpPage = false;
   try {
     setRunnerState({ current: item.email, message: `Opening login for ${item.email}...` });
     await clearRelevantCookies();
@@ -100,6 +101,7 @@ async function processOnboardingItem(jobId, item) {
     if (otpReady?.status === "captcha") throw new Error("captcha_encountered");
     if (otpReady?.status === "password_required" && !item.password) throw new Error("missing_password");
     if (otpReady?.status !== "ok") throw new Error(otpReady?.reason || "unexpected_page");
+    reachedOtpPage = true;
 
     setRunnerState({ message: `Fetching OTP for ${item.email}...` });
     const code = await pollOtp(jobId, item.id);
@@ -118,19 +120,25 @@ async function processOnboardingItem(jobId, item) {
     setRunnerState({ consecutiveCaptchas: 0, message: `Saved ${item.email}.` });
     await closeTab(tabId);
   } catch (error) {
-    await closeTab(tabId);
     const rawReason = error instanceof Error ? error.message : "unknown_error";
     const errorReason = ["wrong_password", "otp_timeout", "captcha_encountered", "unexpected_page", "missing_password", "otp_not_found"].includes(rawReason)
       ? rawReason
       : "unknown_error";
-    const status = errorReason === "captcha_encountered" ? "needs_manual" : "failed";
+    const keepTabOpen = reachedOtpPage || errorReason === "captcha_encountered";
+    if (!keepTabOpen) await closeTab(tabId);
+    const status = keepTabOpen ? "needs_manual" : "failed";
     await reportOnboardingResult(jobId, item.id, status, errorReason).catch(() => undefined);
     if (errorReason === "captcha_encountered") {
       setRunnerState({ consecutiveCaptchas: runnerState.consecutiveCaptchas + 1 });
     } else {
       setRunnerState({ consecutiveCaptchas: 0 });
     }
-    setRunnerState({ message: `${item.email} stopped: ${errorReason.replaceAll("_", " ")}.` });
+    setRunnerState({
+      running: keepTabOpen ? false : runnerState.running,
+      message: keepTabOpen
+        ? `${item.email} needs manual finish: ${rawReason.replaceAll("_", " ")}. The login tab was left open.`
+        : `${item.email} stopped: ${errorReason.replaceAll("_", " ")}.`
+    });
     if (runnerState.consecutiveCaptchas >= MAX_CAPTCHA_FAILURES) {
       throw new Error("Repeated CAPTCHA challenges. Pausing onboarding.");
     }

@@ -37,6 +37,8 @@ assert.match(background, /\/api\/rotator\/onboarding\/jobs/);
 assert.match(background, /\/next/);
 assert.match(background, /\/otp/);
 assert.match(background, /captcha_encountered/);
+assert.match(background, /reachedOtpPage/);
+assert.match(background, /needs manual finish/);
 
 const contentScript = await readFile(path.join(root, "content-script.js"), "utf8");
 assert.match(contentScript, /rotatorSubmitEmail/);
