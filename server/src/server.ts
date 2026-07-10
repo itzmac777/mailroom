@@ -845,6 +845,13 @@ async function writeDb(db: Db): Promise<void> {
   await fs.rename(tmp, DB_PATH);
 }
 
+let dbMutationQueue: Promise<unknown> = Promise.resolve();
+async function withDbMutation<T>(work: () => Promise<T>): Promise<T> {
+  const run = dbMutationQueue.catch(() => undefined).then(work);
+  dbMutationQueue = run.catch(() => undefined);
+  return run;
+}
+
 async function audit(db: Db, actor: string, event: string, details: JsonObject = {}): Promise<void> {
   db.audit.unshift({
     id: randomToken(10),
@@ -1199,13 +1206,32 @@ async function sendForwardingVerificationEmail(mailbox: Mailbox, pass: string, r
   );
 }
 
+function mailuAliasEndpoint(aliasEmail?: string): string {
+  if (!aliasEmail) return MAILU_ALIAS_ENDPOINT;
+  return MAILU_ALIAS_ENDPOINT.endsWith("/")
+    ? `${MAILU_ALIAS_ENDPOINT}${encodeURIComponent(aliasEmail)}`
+    : `${MAILU_ALIAS_ENDPOINT}/${encodeURIComponent(aliasEmail)}`;
+}
+
+function mailuAliasPayload(alias: MailAlias, destinations: string[], enabled: boolean): JsonObject {
+  return {
+    localpart: alias.local,
+    domain: MAIL_DOMAIN,
+    email: alias.email,
+    destination: destinations,
+    enabled,
+    comment: "Created by Mailroom alias controls"
+  };
+}
+
 async function upsertMailuAlias(mailbox: Mailbox, alias: MailAlias, enabled = true): Promise<MailuCreateResult> {
   if (MAILU_DRY_RUN) return { provider: "dry-run", message: "MAILU_DRY_RUN is enabled; no Mailu alias call was made." };
   const base = env.MAILU_API_BASE;
   const token = env.MAILU_API_TOKEN;
   if (!base || !token) throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
   const { destinations, relayResults } = await aliasDestinations(mailbox, alias);
-  const response = await fetch(new URL(MAILU_ALIAS_ENDPOINT, base).toString(), {
+  const payload = mailuAliasPayload(alias, destinations, enabled);
+  let response = await fetch(new URL(mailuAliasEndpoint(), base).toString(), {
     method: "POST",
     signal: AbortSignal.timeout(15_000),
     headers: {
@@ -1213,16 +1239,38 @@ async function upsertMailuAlias(mailbox: Mailbox, alias: MailAlias, enabled = tr
       authorization: `Bearer ${token}`,
       "x-api-key": token
     },
-    body: JSON.stringify({
-      localpart: alias.local,
-      domain: MAIL_DOMAIN,
-      email: alias.email,
-      destination: destinations,
-      enabled,
-      comment: "Created by Mailroom alias controls"
-    })
+    body: JSON.stringify(payload)
   });
-  const text = await response.text();
+  let text = await response.text();
+  if (response.status === 409) {
+    const createConflictText = text;
+    response = await fetch(new URL(mailuAliasEndpoint(alias.email), base).toString(), {
+      method: "PATCH",
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-api-key": token
+      },
+      body: JSON.stringify(payload)
+    });
+    text = await response.text();
+    if (response.status === 404 || response.status === 405) {
+      await deleteMailuAlias(alias);
+      response = await fetch(new URL(mailuAliasEndpoint(), base).toString(), {
+        method: "POST",
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+          "x-api-key": token
+        },
+        body: JSON.stringify(payload)
+      });
+      text = await response.text();
+    }
+    if (!response.ok && !text) text = createConflictText;
+  }
   if (!response.ok) throw new Error(`Mailu alias API failed with ${response.status}: ${text.slice(0, 300)}`);
   return { provider: "mailu", status: response.status, body: { alias: text ? safeJson(text) : null, destinations, relays: relayResults } };
 }
@@ -1478,7 +1526,7 @@ function startTempInboxForwardingWorker(): void {
   setInterval(() => {
     if (tempInboxForwardingWorkerRunning) return;
     tempInboxForwardingWorkerRunning = true;
-    runTempInboxForwardingOnce()
+    withDbMutation(runTempInboxForwardingOnce)
       .catch((error) => {
         console.error("temp_inbox_background_worker_failed", error);
       })
@@ -2740,34 +2788,36 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         tempMailEnabled: TEMP_MAIL_ENABLED
       });
     }
-    if (url.pathname.startsWith("/api/")) return handleApi(req, res, url);
+    if (url.pathname.startsWith("/api/")) return withDbMutation(() => handleApi(req, res, url));
 
-    const db = await readDb();
-    await cleanupExpiredTempMailboxes(db);
-    const session = await getSession(req, db);
+    return withDbMutation(async () => {
+      const db = await readDb();
+      await cleanupExpiredTempMailboxes(db);
+      const session = await getSession(req, db);
 
-    if (req.method === "GET" && url.pathname === "/") return json(res, 200, { ok: true, service: "mail-portal-api", client: CLIENT_ORIGIN });
-    if (req.method === "GET" && url.pathname === "/claim") return html(res, claimPage());
-    if (req.method === "GET" && url.pathname === "/login") return html(res, loginPage());
-    if (req.method === "GET" && url.pathname === "/admin") return html(res, adminPage());
-    if (req.method === "GET" && url.pathname === "/dashboard") {
-      if (!session) return redirect(res, "/login");
-      return html(res, dashboardPage(session.mailbox));
-    }
-    if (req.method === "GET" && url.pathname === "/webmail") {
-      if (!session) return redirect(res, "/login");
-      return redirect(res, session.mailbox.webmailUrl || WEBMAIL_URL);
-    }
-    if (req.method === "GET" && url.pathname === "/logout") {
-      if (session) {
-        delete db.sessions[session.sessionId];
-        await writeDb(db);
+      if (req.method === "GET" && url.pathname === "/") return json(res, 200, { ok: true, service: "mail-portal-api", client: CLIENT_ORIGIN });
+      if (req.method === "GET" && url.pathname === "/claim") return html(res, claimPage());
+      if (req.method === "GET" && url.pathname === "/login") return html(res, loginPage());
+      if (req.method === "GET" && url.pathname === "/admin") return html(res, adminPage());
+      if (req.method === "GET" && url.pathname === "/dashboard") {
+        if (!session) return redirect(res, "/login");
+        return html(res, dashboardPage(session.mailbox));
       }
-      clearSessionCookie(res, req);
-      return redirect(res, "/");
-    }
+      if (req.method === "GET" && url.pathname === "/webmail") {
+        if (!session) return redirect(res, "/login");
+        return redirect(res, session.mailbox.webmailUrl || WEBMAIL_URL);
+      }
+      if (req.method === "GET" && url.pathname === "/logout") {
+        if (session) {
+          delete db.sessions[session.sessionId];
+          await writeDb(db);
+        }
+        clearSessionCookie(res, req);
+        return redirect(res, "/");
+      }
 
-    return html(res, layout({ title: "Not found", body: '<section class="workspace narrow"><div class="panel"><h1>Not found</h1><p>This route does not exist.</p></div></section>' }), 404);
+      return html(res, layout({ title: "Not found", body: '<section class="workspace narrow"><div class="panel"><h1>Not found</h1><p>This route does not exist.</p></div></section>' }), 404);
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("request_failed", { path: url.pathname, message, error });
