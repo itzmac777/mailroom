@@ -82,6 +82,32 @@ export type AdminSummary = {
   audit: Array<Record<string, unknown>>;
 };
 
+export type RotatorAccount = {
+  id: string;
+  label: string;
+  email: string;
+  status: "unknown" | "active" | "needs_relogin";
+  hasSession: boolean;
+  lastUsed?: string;
+  lastVerifiedAt?: string;
+  createdAt: string;
+};
+
+export type RotatorDevice = {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastSeenAt?: string;
+};
+
+export type RotatorAuditEntry = {
+  id: string;
+  at: string;
+  deviceId: string;
+  accountId: string;
+  event: "session_fetched";
+};
+
 export type EmailMessage = {
   uid: string;
   subject: string;

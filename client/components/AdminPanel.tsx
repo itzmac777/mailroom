@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import type { AdminSummary } from "@/lib/types";
@@ -52,6 +53,7 @@ export function AdminPanel() {
           <label className="label">Expires in days<input className="field" name="expiresInDays" type="number" min="1" max="365" defaultValue="30" /></label>
         </div>
         <button className="button button-primary w-full" type="submit" disabled={busy}>{busy ? "Generating..." : "Generate invite"}</button>
+        <Link className="button button-secondary w-full" href="/admin/rotator">Account rotator</Link>
         <p className="min-h-6 text-sm font-bold text-muted">{message}</p>
       </form>
 

@@ -8,6 +8,7 @@ server/.env
 server/data/
 backups/
 *.log
+*.tsbuildinfo
 .next/
 client/.next/
 .DS_Store
