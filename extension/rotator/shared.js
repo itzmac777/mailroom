@@ -42,17 +42,31 @@ async function mailroomFetch(path, options = {}) {
     throw new Error("Open extension options and save your Mailroom URL and device token first.");
   }
   const baseUrl = normalizeBaseUrl(settings.backendUrl);
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      authorization: `Bearer ${settings.deviceToken}`,
-      ...(options.headers || {})
-    }
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "Mailroom request failed.");
+  let response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      ...options,
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        authorization: `Bearer ${settings.deviceToken}`,
+        ...(options.headers || {})
+      }
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error ? `Mailroom network error: ${error.message}` : "Mailroom network error.");
+  }
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = {};
+  }
+  if (!response.ok) {
+    const detail = payload.error || text.replace(/\s+/g, " ").trim().slice(0, 240) || response.statusText || "Mailroom request failed.";
+    throw new Error(`Mailroom ${response.status}: ${detail}`);
+  }
   return payload;
 }
 

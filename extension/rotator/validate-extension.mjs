@@ -22,6 +22,8 @@ const shared = await readFile(path.join(root, "shared.js"), "utf8");
 assert.match(shared, /chrome\.storage\.local/);
 assert.match(shared, /chrome\.cookies\.getAll/);
 assert.match(shared, /chrome\.cookies\.set/);
+assert.match(shared, /Mailroom \${response\.status}/);
+assert.match(shared, /Mailroom network error/);
 assert.match(shared, /hostOnly: Boolean\(cookie\.hostOnly\)/);
 assert.match(shared, /cookie\.domain && !cookie\.hostOnly/);
 assert.match(shared, /backend-api\/me/);

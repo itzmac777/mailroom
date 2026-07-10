@@ -1120,6 +1120,9 @@ async function fetchZenvyOnboardingOtp(email: string): Promise<VerificationMatch
   if (!ROTATOR_ZENVY_IMAP_MASTER_USER || !ROTATOR_ZENVY_IMAP_MASTER_PASSWORD) {
     throw new Error("Zenvy onboarding IMAP master credentials are not configured.");
   }
+  if (ROTATOR_ZENVY_IMAP_MASTER_PASSWORD === "your-master-imap-password") {
+    throw new Error("ROTATOR_ZENVY_IMAP_MASTER_PASSWORD is still set to the example placeholder.");
+  }
   return fetchVerificationViaImap(zenvyImapAuthUser(email), ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, "openai");
 }
 
