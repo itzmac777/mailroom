@@ -12,6 +12,7 @@
     "start:client": "npm --prefix client run start",
     "start:server": "npm --prefix server run start",
     "check:server": "npm --prefix server run check",
+    "test:server": "npm --prefix server run test",
     "dns:preflight": "npm --prefix server run dns:preflight",
     "seed:admin": "npm --prefix server run seed:admin"
   }

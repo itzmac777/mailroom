@@ -175,12 +175,58 @@ type TempInboxSessionRecord = {
   accounts: TempInboxAccount[];
 };
 
+type RotatorAccountStatus = "unknown" | "active" | "needs_relogin";
+
+type RotatorAccount = {
+  id: string;
+  label: string;
+  email: string;
+  status: RotatorAccountStatus;
+  lastUsed?: string;
+  lastVerifiedAt?: string;
+  createdAt: string;
+};
+
+type RotatorDevice = {
+  id: string;
+  name: string;
+  tokenHash: string;
+  createdAt: string;
+  lastSeenAt?: string;
+};
+
+type RotatorSessionSnapshot = {
+  accountId: string;
+  encryptedPayload: string;
+  uploadedByDeviceId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type RotatorAuditEntry = {
+  id: string;
+  at: string;
+  deviceId: string;
+  accountId: string;
+  event: "session_fetched";
+};
+
+type PublicRotatorAccount = RotatorAccount & {
+  hasSession: boolean;
+};
+
+type PublicRotatorDevice = Omit<RotatorDevice, "tokenHash">;
+
 type Db = {
   invites: Record<string, Invite>;
   mailboxes: Record<string, Mailbox>;
   sessions: Record<string, SessionRecord>;
   tempSessions: Record<string, TempSessionRecord>;
   tempInboxSessions: Record<string, TempInboxSessionRecord>;
+  rotatorAccounts: Record<string, RotatorAccount>;
+  rotatorDevices: Record<string, RotatorDevice>;
+  rotatorSessions: Record<string, RotatorSessionSnapshot>;
+  rotatorAudit: RotatorAuditEntry[];
   audit: AuditEntry[];
 };
 
@@ -262,6 +308,7 @@ const DB_PATH = DATABASE_URL.startsWith("file:")
 const DB_DIR = path.dirname(DB_PATH);
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const APP_SECRET = env.APP_SECRET || "dev-secret-change-me";
+const ROTATOR_SESSION_KEY = String(env.ROTATOR_SESSION_KEY || "");
 const MAIL_DOMAIN = (env.MAIL_DOMAIN || "example.com").toLowerCase();
 const MAIL_HOSTNAME = (env.MAIL_HOSTNAME || `mail.${MAIL_DOMAIN}`).toLowerCase();
 const WEBMAIL_URL = env.WEBMAIL_URL || `https://${MAIL_HOSTNAME}/webmail/`;
@@ -769,6 +816,10 @@ function getOrCreateTempInboxSession(req: IncomingMessage, res: ServerResponse, 
 
 function rateLimit(req: IncomingMessage, key: string, limit: number, windowMs: number): boolean {
   const bucketKey = `${key}:${clientIp(req)}`;
+  return rateLimitKey(bucketKey, limit, windowMs);
+}
+
+function rateLimitKey(bucketKey: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
   const bucket = rateBuckets.get(bucketKey) || { count: 0, resetAt: now + windowMs };
   if (bucket.resetAt < now) {
@@ -778,6 +829,99 @@ function rateLimit(req: IncomingMessage, key: string, limit: number, windowMs: n
   bucket.count += 1;
   rateBuckets.set(bucketKey, bucket);
   return bucket.count <= limit;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function bearerToken(req: IncomingMessage): string {
+  const value = String(req.headers.authorization || "");
+  const match = value.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+function hashRotatorDeviceToken(token: string): string {
+  return crypto.createHmac("sha256", APP_SECRET).update(`rotator-device:${token}`).digest("hex");
+}
+
+function getRotatorDevice(req: IncomingMessage, db: Db): RotatorDevice | null {
+  const token = bearerToken(req);
+  if (!token) return null;
+  const tokenHash = hashRotatorDeviceToken(token);
+  const device = Object.values(db.rotatorDevices).find((item) => safeEqual(item.tokenHash, tokenHash));
+  if (!device) return null;
+  device.lastSeenAt = nowIso();
+  return device;
+}
+
+function requireRotatorAdmin(req: IncomingMessage): boolean {
+  const token = req.headers["x-admin-token"];
+  return Boolean(ADMIN_TOKEN && token === ADMIN_TOKEN);
+}
+
+function publicRotatorAccount(db: Db, account: RotatorAccount): PublicRotatorAccount {
+  return {
+    ...account,
+    hasSession: Boolean(db.rotatorSessions[account.id])
+  };
+}
+
+function publicRotatorDevice(device: RotatorDevice): PublicRotatorDevice {
+  const { tokenHash, ...publicFields } = device;
+  return publicFields;
+}
+
+function rotatorAccountList(db: Db): PublicRotatorAccount[] {
+  return Object.values(db.rotatorAccounts)
+    .map((account) => publicRotatorAccount(db, account))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+function rotatorDeviceList(db: Db): PublicRotatorDevice[] {
+  return Object.values(db.rotatorDevices)
+    .map(publicRotatorDevice)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+function normalizeRotatorLabel(value: unknown): string {
+  return String(value || "").trim().slice(0, 60);
+}
+
+function rotatorSessionKey(): Buffer {
+  if (ROTATOR_SESSION_KEY.length < 32) throw new Error("Rotator session encryption is not configured.");
+  return crypto.createHash("sha256").update(ROTATOR_SESSION_KEY).digest();
+}
+
+function encryptRotatorSession(payload: unknown): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", rotatorSessionKey(), iv);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(payload), "utf8"),
+    cipher.final()
+  ]);
+  const tag = cipher.getAuthTag();
+  return [
+    "v1",
+    iv.toString("base64url"),
+    tag.toString("base64url"),
+    encrypted.toString("base64url")
+  ].join(":");
+}
+
+function decryptRotatorSession(value: string): unknown {
+  const [version, iv, tag, encrypted] = String(value || "").split(":");
+  if (version !== "v1" || !iv || !tag || !encrypted) throw new Error("Rotator session snapshot is invalid.");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", rotatorSessionKey(), Buffer.from(iv, "base64url"));
+  decipher.setAuthTag(Buffer.from(tag, "base64url"));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(encrypted, "base64url")),
+    decipher.final()
+  ]);
+  return JSON.parse(decrypted.toString("utf8"));
 }
 
 async function ensureDb(): Promise<void> {
@@ -791,6 +935,10 @@ async function ensureDb(): Promise<void> {
       sessions: {},
       tempSessions: {},
       tempInboxSessions: {},
+      rotatorAccounts: {},
+      rotatorDevices: {},
+      rotatorSessions: {},
+      rotatorAudit: [],
       audit: []
     };
     await fs.writeFile(DB_PATH, JSON.stringify(initial, null, 2));
@@ -806,7 +954,12 @@ async function readDb(): Promise<Db> {
   db.sessions ||= {};
   db.tempSessions ||= {};
   db.tempInboxSessions ||= {};
+  db.rotatorAccounts ||= {};
+  db.rotatorDevices ||= {};
+  db.rotatorSessions ||= {};
+  db.rotatorAudit ||= [];
   db.audit ||= [];
+  db.rotatorAudit = db.rotatorAudit.slice(0, 1000);
   for (const session of Object.values(db.tempInboxSessions)) {
     session.accounts ||= [];
     for (const account of session.accounts) {
@@ -1593,11 +1746,11 @@ function verifyCaptcha({ id, token, answer }: CaptchaPayload): boolean {
   }
 }
 
-async function parseBody(req: IncomingMessage): Promise<RequestBody> {
+async function parseBody(req: IncomingMessage): Promise<any> {
   let body = "";
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 32_000) throw new Error("Request body too large");
+    if (body.length > 1_000_000) throw new Error("Request body too large");
   }
   return body ? JSON.parse(body) : {};
 }
@@ -1934,9 +2087,207 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: 
   }
 }
 
+async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: URL, db: Db): Promise<void> {
+  const isAdmin = requireRotatorAdmin(req);
+  const device = getRotatorDevice(req, db);
+
+  if (url.pathname === "/api/rotator/devices") {
+    if (!isAdmin) return json(res, 401, { error: "Admin token required." });
+
+    if (req.method === "GET") {
+      return json(res, 200, { devices: rotatorDeviceList(db) });
+    }
+
+    if (req.method === "POST") {
+      const body = await parseBody(req);
+      const name = String(body.name || "").trim().slice(0, 80);
+      if (!name) return json(res, 400, { error: "Device name is required." });
+
+      const token = randomToken(32);
+      const deviceRecord: RotatorDevice = {
+        id: randomToken(12),
+        name,
+        tokenHash: hashRotatorDeviceToken(token),
+        createdAt: nowIso()
+      };
+      db.rotatorDevices[deviceRecord.id] = deviceRecord;
+      await audit(db, "admin", "rotator_device_created", { deviceId: deviceRecord.id, name });
+      await writeDb(db);
+      return json(res, 201, { device: publicRotatorDevice(deviceRecord), token });
+    }
+  }
+
+  const deviceRoute = url.pathname.match(/^\/api\/rotator\/devices\/([^/]+)$/);
+  if (deviceRoute) {
+    if (!isAdmin) return json(res, 401, { error: "Admin token required." });
+    if (req.method !== "DELETE") return json(res, 404, { error: "Not found." });
+    const id = decodeURIComponent(deviceRoute[1]);
+    if (!db.rotatorDevices[id]) return json(res, 404, { error: "Device not found." });
+    delete db.rotatorDevices[id];
+    await audit(db, "admin", "rotator_device_revoked", { deviceId: id });
+    await writeDb(db);
+    return json(res, 200, { deleted: true });
+  }
+
+  if (url.pathname === "/api/rotator/accounts") {
+    if (!isAdmin && !device) return json(res, 401, { error: "Rotator authorization required." });
+
+    if (req.method === "GET") {
+      if (device) await writeDb(db);
+      return json(res, 200, { accounts: rotatorAccountList(db) });
+    }
+
+    if (!isAdmin) return json(res, 401, { error: "Admin token required." });
+
+    if (req.method === "POST") {
+      const body = await parseBody(req);
+      const label = normalizeRotatorLabel(body.label);
+      const email = validateEmail(body.email);
+      if (!label) return json(res, 400, { error: "Account label is required." });
+      if (!email) return json(res, 400, { error: "Enter a valid account email." });
+      const duplicate = Object.values(db.rotatorAccounts).some((account) => account.email.toLowerCase() === email);
+      if (duplicate) return json(res, 409, { error: "That rotator account already exists." });
+
+      const account: RotatorAccount = {
+        id: randomToken(12),
+        label,
+        email,
+        status: "unknown",
+        createdAt: nowIso()
+      };
+      db.rotatorAccounts[account.id] = account;
+      await audit(db, "admin", "rotator_account_created", { accountId: account.id, email });
+      await writeDb(db);
+      return json(res, 201, { account: publicRotatorAccount(db, account) });
+    }
+  }
+
+  const accountRoute = url.pathname.match(/^\/api\/rotator\/accounts\/([^/]+)$/);
+  if (accountRoute) {
+    if (!isAdmin) return json(res, 401, { error: "Admin token required." });
+    const id = decodeURIComponent(accountRoute[1]);
+    const account = db.rotatorAccounts[id];
+    if (!account) return json(res, 404, { error: "Rotator account not found." });
+
+    if (req.method === "PATCH") {
+      const body = await parseBody(req);
+      const label = body.label === undefined ? account.label : normalizeRotatorLabel(body.label);
+      const email = body.email === undefined ? account.email : validateEmail(body.email);
+      if (!label) return json(res, 400, { error: "Account label is required." });
+      if (!email) return json(res, 400, { error: "Enter a valid account email." });
+      const duplicate = Object.values(db.rotatorAccounts).some((item) => item.id !== id && item.email.toLowerCase() === email);
+      if (duplicate) return json(res, 409, { error: "That rotator account already exists." });
+
+      account.label = label;
+      account.email = email;
+      await audit(db, "admin", "rotator_account_updated", { accountId: id });
+      await writeDb(db);
+      return json(res, 200, { account: publicRotatorAccount(db, account) });
+    }
+
+    if (req.method === "DELETE") {
+      delete db.rotatorAccounts[id];
+      delete db.rotatorSessions[id];
+      await audit(db, "admin", "rotator_account_deleted", { accountId: id });
+      await writeDb(db);
+      return json(res, 200, { deleted: true });
+    }
+  }
+
+  const sessionRoute = url.pathname.match(/^\/api\/rotator\/accounts\/([^/]+)\/session$/);
+  if (sessionRoute) {
+    if (!device) return json(res, 401, { error: "Device token required." });
+    const accountId = decodeURIComponent(sessionRoute[1]);
+    const account = db.rotatorAccounts[accountId];
+    if (!account) return json(res, 404, { error: "Rotator account not found." });
+
+    if (req.method === "POST") {
+      const body = await parseBody(req);
+      if (!Array.isArray(body)) return json(res, 400, { error: "Session snapshot must be a cookie array." });
+      let encryptedPayload = "";
+      try {
+        encryptedPayload = encryptRotatorSession(body);
+      } catch (error) {
+        return json(res, 500, { error: error instanceof Error ? error.message : "Rotator session encryption failed." });
+      }
+      const existing = db.rotatorSessions[accountId];
+      db.rotatorSessions[accountId] = {
+        accountId,
+        encryptedPayload,
+        uploadedByDeviceId: device.id,
+        createdAt: existing?.createdAt || nowIso(),
+        updatedAt: nowIso()
+      };
+      account.status = "unknown";
+      await audit(db, device.id, "rotator_session_uploaded", { accountId });
+      await writeDb(db);
+      return json(res, 200, { account: publicRotatorAccount(db, account) });
+    }
+
+    if (req.method === "GET") {
+      if (!rateLimitKey(`rotator-session-fetch:${device.id}`, 30, 15 * 60 * 1000)) {
+        await writeDb(db);
+        return json(res, 429, { error: "Too many session fetches. Try again later." });
+      }
+      const snapshot = db.rotatorSessions[accountId];
+      if (!snapshot) {
+        await writeDb(db);
+        return json(res, 404, { error: "No session snapshot is saved for this account." });
+      }
+      let session;
+      try {
+        session = decryptRotatorSession(snapshot.encryptedPayload);
+      } catch (error) {
+        await writeDb(db);
+        return json(res, 500, { error: error instanceof Error ? error.message : "Rotator session decrypt failed." });
+      }
+      account.lastUsed = nowIso();
+      db.rotatorAudit.unshift({
+        id: randomToken(10),
+        at: nowIso(),
+        deviceId: device.id,
+        accountId,
+        event: "session_fetched"
+      });
+      db.rotatorAudit = db.rotatorAudit.slice(0, 1000);
+      await writeDb(db);
+      return json(res, 200, { session });
+    }
+  }
+
+  const markStatusRoute = url.pathname.match(/^\/api\/rotator\/accounts\/([^/]+)\/mark-status$/);
+  if (markStatusRoute) {
+    if (!device) return json(res, 401, { error: "Device token required." });
+    if (req.method !== "POST") return json(res, 404, { error: "Not found." });
+    const accountId = decodeURIComponent(markStatusRoute[1]);
+    const account = db.rotatorAccounts[accountId];
+    if (!account) return json(res, 404, { error: "Rotator account not found." });
+    const body = await parseBody(req);
+    const status = String(body.status || "");
+    if (status !== "active" && status !== "needs_relogin") return json(res, 400, { error: "Status must be active or needs_relogin." });
+    account.status = status;
+    account.lastVerifiedAt = nowIso();
+    await audit(db, device.id, "rotator_account_status_marked", { accountId, status });
+    await writeDb(db);
+    return json(res, 200, { account: publicRotatorAccount(db, account) });
+  }
+
+  if (url.pathname === "/api/rotator/audit") {
+    if (!isAdmin) return json(res, 401, { error: "Admin token required." });
+    if (req.method !== "GET") return json(res, 404, { error: "Not found." });
+    return json(res, 200, { audit: db.rotatorAudit.slice(0, 100) });
+  }
+
+  return json(res, 404, { error: "Not found." });
+}
+
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const db = await readDb();
   await cleanupExpiredTempMailboxes(db);
+
+  if (url.pathname.startsWith("/api/rotator")) {
+    return handleRotatorApi(req, res, url, db);
+  }
 
   if (req.method === "GET" && url.pathname === "/api/captcha") {
     const challenge = createCaptcha();
@@ -2768,7 +3119,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         "access-control-allow-origin": CLIENT_ORIGIN,
         "access-control-allow-credentials": "true",
         "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
-        "access-control-allow-headers": "content-type,x-admin-token"
+        "access-control-allow-headers": "content-type,x-admin-token,authorization"
       });
       return res.end();
     }
@@ -2825,12 +3176,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 }
 
+export { handle };
+
 await ensureDb();
-startTempInboxForwardingWorker();
-http.createServer(handle).listen(PORT, () => {
-  console.log(`Invite mail portal running at http://localhost:${PORT}`);
-  console.log(`Domain: ${MAIL_DOMAIN}; Mailu dry-run: ${MAILU_DRY_RUN}`);
-});
+if (env.MAILROOM_NO_LISTEN !== "true") {
+  startTempInboxForwardingWorker();
+  http.createServer(handle).listen(PORT, () => {
+    console.log(`Invite mail portal running at http://localhost:${PORT}`);
+    console.log(`Domain: ${MAIL_DOMAIN}; Mailu dry-run: ${MAILU_DRY_RUN}`);
+  });
+}
 
 
 
