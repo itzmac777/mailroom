@@ -44,5 +44,7 @@ assert.match(contentScript, /rotatorSubmitOtp/);
 assert.match(contentScript, /providerButton/);
 assert.match(contentScript, /continue with/);
 assert.match(contentScript, /safe_submit_not_found/);
+assert.match(contentScript, /inboxVerificationPage/);
+assert.match(contentScript, /check your inbox/);
 
 console.log("Extension manifest and rotator flows look valid.");

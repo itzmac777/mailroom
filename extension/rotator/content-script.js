@@ -95,6 +95,11 @@ function wrongPasswordVisible() {
   return /wrong password|incorrect password|invalid password/.test(pageText());
 }
 
+function inboxVerificationPage() {
+  const text = pageText();
+  return text.includes("check your inbox") || text.includes("enter the verification code") || /\bcode\b/.test(text) && text.includes("resend email");
+}
+
 async function waitFor(predicate, timeoutMs = 30000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -117,6 +122,7 @@ function emailInput() {
 }
 
 function passwordInput() {
+  if (inboxVerificationPage()) return null;
   return findInput([
     'input[type="password"]',
     'input[name="password"]',
@@ -124,14 +130,29 @@ function passwordInput() {
   ]);
 }
 
+function visibleTextEntryInputs() {
+  return Array.from(document.querySelectorAll("input"))
+    .filter(visible)
+    .filter((input) => !input.disabled && input.getAttribute("aria-disabled") !== "true")
+    .filter((input) => !["button", "checkbox", "hidden", "radio", "reset", "submit"].includes(String(input.type || "").toLowerCase()));
+}
+
 function otpInputs() {
   const one = findInput([
     'input[autocomplete="one-time-code"]',
     'input[inputmode="numeric"]',
     'input[name*="code" i]',
-    'input[id*="code" i]'
+    'input[id*="code" i]',
+    'input[aria-label*="code" i]',
+    'input[placeholder*="code" i]'
   ]);
   if (one) return [one];
+  if (inboxVerificationPage()) {
+    const entries = visibleTextEntryInputs();
+    if (entries.length === 1) return [entries[0]];
+    const focused = entries.find((input) => input === document.activeElement);
+    if (focused) return [focused];
+  }
   const boxes = Array.from(document.querySelectorAll('input[maxlength="1"], input[aria-label*="code" i]')).filter(visible);
   return boxes.length >= 4 ? boxes : [];
 }
