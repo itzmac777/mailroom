@@ -154,8 +154,11 @@ device.
 ### `GET /api/rotator/onboarding/jobs/:id/items/:itemId/otp`
 
 Device-token only. Fetches the latest OpenAI verification code for the claimed
-item. Local domain mailboxes use the rotator IMAP master credentials; external
-mailboxes use the existing temp-inbox fetch path.
+item. Local domain mailboxes try the rotator IMAP master credentials first. If
+master-user auth is unavailable, Mailroom resets the target mailbox password
+through `MAILU_UPDATE_USER_ENDPOINT`, stores the generated password encrypted,
+and then fetches the OTP with normal mailbox IMAP auth. External mailboxes use
+the existing temp-inbox fetch path.
 
 ### `GET /api/rotator/onboarding/imap-test?email=:email`
 
@@ -163,7 +166,8 @@ Admin-only. Tests local-domain IMAP access for one onboarding mailbox without
 returning passwords, message bodies, or raw OTPs. The response includes the
 configured auth format, common Dovecot master-user format attempts, the computed
 IMAP usernames, auth/status success or sanitized failures, and whether an OpenAI
-verification message was found.
+verification message was found. Add `reset=true` to test the Mailu password
+reset fallback; the generated password is not returned.
 
 ### `POST /api/rotator/onboarding/jobs/:id/items/:itemId/result`
 

@@ -244,6 +244,13 @@ type RotatorOnboardingCredential = {
   createdAt: string;
 };
 
+type RotatorMailboxCredential = {
+  email: string;
+  encPassword: string;
+  source: "mailu_reset";
+  updatedAt: string;
+};
+
 type RotatorAuditEntry = {
   id: string;
   at: string;
@@ -271,6 +278,7 @@ type Db = {
   rotatorSessions: Record<string, RotatorSessionSnapshot>;
   rotatorOnboardingJobs: Record<string, RotatorOnboardingJob>;
   rotatorOnboardingCredentials: Record<string, RotatorOnboardingCredential>;
+  rotatorMailboxCredentials: Record<string, RotatorMailboxCredential>;
   rotatorAudit: RotatorAuditEntry[];
   audit: AuditEntry[];
 };
@@ -368,6 +376,7 @@ const MAILU_DRY_RUN = String(env.MAILU_DRY_RUN ?? "true").toLowerCase() !== "fal
 const MAILU_DELETE_USER_ENDPOINT = env.MAILU_DELETE_USER_ENDPOINT || "/api/v1/user";
 const MAILU_ALIAS_ENDPOINT = env.MAILU_ALIAS_ENDPOINT || "/api/v1/alias";
 const MAILU_FORWARDING_ENDPOINT = env.MAILU_FORWARDING_ENDPOINT || "/api/v1/user";
+const MAILU_UPDATE_USER_ENDPOINT = env.MAILU_UPDATE_USER_ENDPOINT || "/api/v1/user";
 const SMTP_HOST = env.SMTP_HOST || MAIL_HOSTNAME;
 const SMTP_PORT = Number(env.SMTP_PORT || 465);
 const SMTP_SECURE = String(env.SMTP_SECURE ?? "true").toLowerCase() !== "false";
@@ -1074,6 +1083,36 @@ function isZenvyOnboardingEmail(email: string): boolean {
   return lower.endsWith("@zenvy.com.bd") || lower.endsWith(`@${MAIL_DOMAIN.toLowerCase()}`);
 }
 
+function rotatorMailboxCredentialKey(email: string): string {
+  return email.toLowerCase();
+}
+
+function getRotatorMailboxPassword(db: Db, email: string): string | undefined {
+  const credential = db.rotatorMailboxCredentials[rotatorMailboxCredentialKey(email)];
+  if (!credential?.encPassword) return undefined;
+  const payload = decryptRotatorCredential<{ password?: string }>(credential.encPassword);
+  return payload.password || undefined;
+}
+
+function storeRotatorMailboxPassword(db: Db, email: string, password: string): void {
+  db.rotatorMailboxCredentials[rotatorMailboxCredentialKey(email)] = {
+    email: email.toLowerCase(),
+    encPassword: encryptRotatorCredential({ password }),
+    source: "mailu_reset",
+    updatedAt: nowIso()
+  };
+}
+
+function generatedRotatorMailboxPassword(): string {
+  return `${randomToken(24)}Aa1!`;
+}
+
+function mailuUserUpdateEndpoint(email: string): string {
+  return MAILU_UPDATE_USER_ENDPOINT.endsWith("/")
+    ? `${MAILU_UPDATE_USER_ENDPOINT}${encodeURIComponent(email)}`
+    : `${MAILU_UPDATE_USER_ENDPOINT}/${encodeURIComponent(email)}`;
+}
+
 async function fetchVerificationViaImap(authUser: string, pass: string, targetEmail: string, keyword = "openai"): Promise<VerificationMatch | undefined> {
   const client = new ImapFlow({
     host: MAIL_HOSTNAME,
@@ -1195,14 +1234,74 @@ async function fetchVerificationViaConnectedImap(client: ImapFlow, targetEmail: 
   return matches[0];
 }
 
-async function fetchZenvyOnboardingOtp(email: string): Promise<VerificationMatch | undefined> {
+async function resetMailuMailboxPassword(email: string, password: string): Promise<MailuCreateResult> {
+  if (MAILU_DRY_RUN) {
+    return {
+      provider: "dry-run",
+      message: "MAILU_DRY_RUN is enabled; no Mailu password reset call was made."
+    };
+  }
+  const base = env.MAILU_API_BASE;
+  const token = env.MAILU_API_TOKEN;
+  if (!base || !token) throw new Error("MAILU_API_BASE and MAILU_API_TOKEN are required when MAILU_DRY_RUN=false.");
+  const response = await fetch(new URL(mailuUserUpdateEndpoint(email), base).toString(), {
+    method: "PATCH",
+    signal: AbortSignal.timeout(15_000),
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+      "x-api-key": token
+    },
+    body: JSON.stringify({
+      email,
+      raw_password: password,
+      enabled: true
+    })
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Mailu password reset failed with ${response.status}: ${text.slice(0, 300)}`);
+  return { provider: "mailu", status: response.status, body: text ? safeJson(text) : null };
+}
+
+async function rotateZenvyMailboxPassword(db: Db, email: string): Promise<string> {
+  const password = generatedRotatorMailboxPassword();
+  await resetMailuMailboxPassword(email, password);
+  storeRotatorMailboxPassword(db, email, password);
+  const mailbox = db.mailboxes[email.toLowerCase()];
+  if (mailbox) mailbox.passwordHash = hashPassword(password);
+  return password;
+}
+
+async function fetchZenvyOnboardingOtp(db: Db, email: string): Promise<VerificationMatch | undefined> {
+  const storedPassword = getRotatorMailboxPassword(db, email);
+  if (storedPassword) {
+    try {
+      return await fetchVerificationViaImap(email, storedPassword, email, "openai");
+    } catch {
+      delete db.rotatorMailboxCredentials[rotatorMailboxCredentialKey(email)];
+    }
+  }
+
   if (!ROTATOR_ZENVY_IMAP_MASTER_USER || !ROTATOR_ZENVY_IMAP_MASTER_PASSWORD) {
-    throw new Error("Zenvy onboarding IMAP master credentials are not configured.");
+    const password = await rotateZenvyMailboxPassword(db, email);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return fetchVerificationViaImap(email, password, email, "openai");
   }
-  if (ROTATOR_ZENVY_IMAP_MASTER_PASSWORD === "your-master-imap-password") {
-    throw new Error("ROTATOR_ZENVY_IMAP_MASTER_PASSWORD is still set to the example placeholder.");
+  if (ROTATOR_ZENVY_IMAP_MASTER_PASSWORD !== "your-master-imap-password") {
+    try {
+      return await fetchVerificationViaImap(zenvyImapAuthUser(email), ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, "openai");
+    } catch {
+      // Fall through to a Mailu password rotation when Dovecot master-user auth is not enabled.
+    }
   }
-  return fetchVerificationViaImap(zenvyImapAuthUser(email), ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, "openai");
+
+  const password = await rotateZenvyMailboxPassword(db, email);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return await fetchVerificationViaImap(email, password, email, "openai");
+  } catch (error) {
+    throw new Error(`Mailu password reset succeeded, but IMAP login still failed: ${cleanImapError(error)}`);
+  }
 }
 
 async function fetchExternalOnboardingOtp(email: string, password: string): Promise<VerificationMatch | undefined> {
@@ -1242,6 +1341,7 @@ async function ensureDb(): Promise<void> {
       rotatorSessions: {},
       rotatorOnboardingJobs: {},
       rotatorOnboardingCredentials: {},
+      rotatorMailboxCredentials: {},
       rotatorAudit: [],
       audit: []
     };
@@ -1263,6 +1363,7 @@ async function readDb(): Promise<Db> {
   db.rotatorSessions ||= {};
   db.rotatorOnboardingJobs ||= {};
   db.rotatorOnboardingCredentials ||= {};
+  db.rotatorMailboxCredentials ||= {};
   db.rotatorAudit ||= [];
   db.audit ||= [];
   db.rotatorAudit = db.rotatorAudit.slice(0, 1000);
@@ -2413,14 +2514,9 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
     if (req.method !== "GET") return json(res, 404, { error: "Not found." });
     const email = validateEmail(url.searchParams.get("email"));
     const keyword = String(url.searchParams.get("keyword") || "openai").trim().slice(0, 80) || "openai";
+    const reset = url.searchParams.get("reset") === "true";
     if (!email) return json(res, 400, { error: "A valid email query parameter is required." });
     if (!isZenvyOnboardingEmail(email)) return json(res, 400, { error: `Email must belong to ${MAIL_DOMAIN} or zenvy.com.bd.` });
-    if (!ROTATOR_ZENVY_IMAP_MASTER_USER || !ROTATOR_ZENVY_IMAP_MASTER_PASSWORD) {
-      return json(res, 500, { error: "Zenvy onboarding IMAP master credentials are not configured." });
-    }
-    if (ROTATOR_ZENVY_IMAP_MASTER_PASSWORD === "your-master-imap-password") {
-      return json(res, 500, { error: "ROTATOR_ZENVY_IMAP_MASTER_PASSWORD is still set to the example placeholder." });
-    }
 
     const formats = Array.from(new Set([
       ROTATOR_ZENVY_IMAP_AUTH_FORMAT,
@@ -2429,11 +2525,34 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
       "{masterUser}*{email}",
       "{masterUser}*{local}"
     ]));
-    const attempts = [];
-    for (const format of formats) {
-      const authUser = zenvyImapAuthUserForFormat(email, format);
-      const result = await testVerificationViaImap(authUser, ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, keyword);
-      attempts.push({ format, ...result });
+    const attempts: Array<Record<string, unknown>> = [];
+    const storedPassword = getRotatorMailboxPassword(db, email);
+    if (storedPassword) {
+      const result = await testVerificationViaImap(email, storedPassword, email, keyword);
+      attempts.push({ format: "stored_mailbox_password", ...result });
+    }
+    if (reset) {
+      try {
+        const password = await rotateZenvyMailboxPassword(db, email);
+        await writeDb(db);
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const result = await testVerificationViaImap(email, password, email, keyword);
+        attempts.push({ format: "mailu_password_reset", ...result });
+      } catch (error) {
+        attempts.push({ format: "mailu_password_reset", ok: false, authUser: email, error: cleanImapError(error) });
+      }
+    }
+    let masterAuthError: string | undefined;
+    if (!ROTATOR_ZENVY_IMAP_MASTER_USER || !ROTATOR_ZENVY_IMAP_MASTER_PASSWORD) {
+      masterAuthError = "Zenvy onboarding IMAP master credentials are not configured.";
+    } else if (ROTATOR_ZENVY_IMAP_MASTER_PASSWORD === "your-master-imap-password") {
+      masterAuthError = "ROTATOR_ZENVY_IMAP_MASTER_PASSWORD is still set to the example placeholder.";
+    } else {
+      for (const format of formats) {
+        const authUser = zenvyImapAuthUserForFormat(email, format);
+        const result = await testVerificationViaImap(authUser, ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, keyword);
+        attempts.push({ format, ...result });
+      }
     }
     const working = attempts.find((attempt) => attempt.ok);
     return json(res, 200, {
@@ -2441,8 +2560,11 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
       host: MAIL_HOSTNAME,
       port: 993,
       targetEmail: email,
-      masterUser: ROTATOR_ZENVY_IMAP_MASTER_USER,
+      masterUser: ROTATOR_ZENVY_IMAP_MASTER_USER || null,
       configuredFormat: ROTATOR_ZENVY_IMAP_AUTH_FORMAT,
+      storedMailboxPassword: Boolean(db.rotatorMailboxCredentials[rotatorMailboxCredentialKey(email)]),
+      resetTried: reset,
+      masterAuthError,
       workingFormat: working?.format || null,
       attempts
     });
@@ -2610,7 +2732,7 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
         return json(res, 400, { error: "This onboarding item needs a password to fetch OTP." });
       }
       const match = isZenvyOnboardingEmail(payload.email)
-        ? await fetchZenvyOnboardingOtp(payload.email)
+        ? await fetchZenvyOnboardingOtp(db, payload.email)
         : await fetchExternalOnboardingOtp(payload.email, payload.password || "");
       db.rotatorAudit.unshift({
         id: randomToken(10),
