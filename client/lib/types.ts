@@ -118,6 +118,7 @@ export type RotatorOnboardingItem = {
   label?: string;
   status: "queued" | "logging_in" | "awaiting_otp" | "verifying" | "saved" | "failed" | "needs_manual";
   errorReason?: "wrong_password" | "otp_timeout" | "captcha_encountered" | "unexpected_page" | "unknown_error" | "missing_password" | "otp_not_found";
+  errorDetail?: string;
   attempts: number;
   claimedByDeviceId?: string;
   claimedAt?: string;

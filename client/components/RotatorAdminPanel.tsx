@@ -324,7 +324,7 @@ export function RotatorAdminPanel() {
                         <strong>{item.label || item.email}</strong>
                         <p className="mt-1 text-xs text-muted">
                           {item.email} · {item.hasPassword ? "Password supplied" : "Email code only"}
-                          {item.errorReason ? ` · ${item.errorReason.replace("_", " ")}` : ""}
+                          {item.errorDetail ? ` · ${item.errorDetail}` : item.errorReason ? ` · ${item.errorReason.replaceAll("_", " ")}` : ""}
                         </p>
                       </div>
                       <span className={`inline-flex min-h-[32px] items-center justify-center border px-3 text-xs font-extrabold uppercase ${onboardingTone[item.status]}`}>

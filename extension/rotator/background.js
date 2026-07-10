@@ -39,11 +39,20 @@ async function sendToTab(tabId, message, attempts = 20) {
   throw lastError || new Error("Could not reach ChatGPT login page.");
 }
 
-async function reportOnboardingResult(jobId, itemId, status, errorReason) {
+async function reportOnboardingResult(jobId, itemId, status, errorReason, errorDetail) {
   return mailroomFetch(`/api/rotator/onboarding/jobs/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/result`, {
     method: "POST",
-    body: JSON.stringify({ status, errorReason })
+    body: JSON.stringify({ status, errorReason, errorDetail })
   });
+}
+
+function onboardingErrorReason(rawReason) {
+  const allowed = ["wrong_password", "otp_timeout", "captcha_encountered", "unexpected_page", "missing_password", "otp_not_found"];
+  if (allowed.includes(rawReason)) return rawReason;
+  if (/no otp found/i.test(rawReason)) return "otp_not_found";
+  if (/timeout|timed out/i.test(rawReason)) return "otp_timeout";
+  if (/captcha|human verification/i.test(rawReason)) return "captcha_encountered";
+  return "unknown_error";
 }
 
 async function pollOtp(jobId, itemId) {
@@ -121,13 +130,11 @@ async function processOnboardingItem(jobId, item) {
     await closeTab(tabId);
   } catch (error) {
     const rawReason = error instanceof Error ? error.message : "unknown_error";
-    const errorReason = ["wrong_password", "otp_timeout", "captcha_encountered", "unexpected_page", "missing_password", "otp_not_found"].includes(rawReason)
-      ? rawReason
-      : "unknown_error";
+    const errorReason = onboardingErrorReason(rawReason);
     const keepTabOpen = reachedOtpPage || errorReason === "captcha_encountered";
     if (!keepTabOpen) await closeTab(tabId);
     const status = keepTabOpen ? "needs_manual" : "failed";
-    await reportOnboardingResult(jobId, item.id, status, errorReason).catch(() => undefined);
+    await reportOnboardingResult(jobId, item.id, status, errorReason, rawReason).catch(() => undefined);
     if (errorReason === "captcha_encountered") {
       setRunnerState({ consecutiveCaptchas: runnerState.consecutiveCaptchas + 1 });
     } else {

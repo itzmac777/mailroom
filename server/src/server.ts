@@ -222,6 +222,7 @@ type RotatorOnboardingItem = {
   label?: string;
   status: RotatorOnboardingItemStatus;
   errorReason?: RotatorOnboardingErrorReason;
+  errorDetail?: string;
   attempts: number;
   claimedByDeviceId?: string;
   claimedAt?: string;
@@ -1039,6 +1040,12 @@ function updateOnboardingJobStatus(job: RotatorOnboardingJob): void {
   if (job.status === "cancelled") return;
   const terminal = job.items.every((item) => ["saved", "failed", "needs_manual"].includes(item.status));
   job.status = terminal ? "completed" : "running";
+}
+
+function sanitizeOnboardingErrorDetail(value: unknown): string | undefined {
+  const text = String(value || "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) return undefined;
+  return text.slice(0, 240);
 }
 
 function parseOnboardingItems(value: unknown): Array<{ email: string; password?: string; label?: string }> {
@@ -2519,9 +2526,14 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
     const status = String(body.status || "");
     if (!["saved", "failed", "needs_manual"].includes(status)) return json(res, 400, { error: "Result status must be saved, failed, or needs_manual." });
     const errorReason = String(body.errorReason || "") as RotatorOnboardingErrorReason;
+    const errorDetail = sanitizeOnboardingErrorDetail(body.errorDetail);
     item.status = status as RotatorOnboardingItemStatus;
     if (status !== "saved" && errorReason) item.errorReason = errorReason;
-    if (status === "saved") delete item.errorReason;
+    if (status !== "saved" && errorDetail) item.errorDetail = errorDetail;
+    if (status === "saved") {
+      delete item.errorReason;
+      delete item.errorDetail;
+    }
     item.completedAt = nowIso();
     purgeOnboardingCredential(db, jobId, itemId);
     updateOnboardingJobStatus(job);

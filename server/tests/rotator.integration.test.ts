@@ -110,6 +110,22 @@ test("rotator device, account, session, audit, and revocation flow", async () =>
     const rawDbAfterResult = JSON.parse(await readFile(dbPath, "utf8"));
     assert.equal(rawDbAfterResult.rotatorOnboardingCredentials[`${createdJob.payload.job.id}:${claimedItem.payload.item.id}`], undefined);
 
+    const secondClaimedItem = await request(baseUrl, `/api/rotator/onboarding/jobs/${createdJob.payload.job.id}/next`, {
+      headers: deviceHeaders
+    });
+    assert.equal(secondClaimedItem.response.status, 200);
+    const manualItem = await request(baseUrl, `/api/rotator/onboarding/jobs/${createdJob.payload.job.id}/items/${secondClaimedItem.payload.item.id}/result`, {
+      method: "POST",
+      headers: deviceHeaders,
+      body: JSON.stringify({
+        status: "needs_manual",
+        errorReason: "unknown_error",
+        errorDetail: "Zenvy onboarding IMAP master credentials are not configured."
+      })
+    });
+    assert.equal(manualItem.response.status, 200);
+    assert.equal(manualItem.payload.item.errorDetail, "Zenvy onboarding IMAP master credentials are not configured.");
+
     const listedAccounts = await request(baseUrl, "/api/rotator/accounts", {
       headers: deviceHeaders
     });
