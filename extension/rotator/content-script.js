@@ -18,17 +18,67 @@ function findInput(selectors) {
 
 function setValue(input, value) {
   input.focus();
-  input.value = value;
+  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")?.set;
+  if (setter) setter.call(input, value);
+  else input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function clickSubmitNear(input) {
+function controlText(control) {
+  return String(control?.innerText || control?.textContent || control?.value || control?.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function providerButton(control) {
+  return /\b(google|apple|microsoft|github|sso|phone)\b|continue with/.test(controlText(control));
+}
+
+function submitButtonText(control) {
+  return /^(continue|next|log in|login|sign in|submit|verify)$/.test(controlText(control));
+}
+
+function enabledButton(control) {
+  return visible(control) && !control.disabled && control.getAttribute("aria-disabled") !== "true";
+}
+
+function overlapsHorizontally(a, b) {
+  return Math.min(a.right, b.right) - Math.max(a.left, b.left) > Math.min(a.width, b.width) * 0.35;
+}
+
+function findSubmitButtonFor(input) {
   const form = input.closest("form");
-  const button = form?.querySelector('button[type="submit"], button:not([disabled])')
-    || document.querySelector('button[type="submit"], button:not([disabled])');
-  if (button) button.click();
-  else form?.requestSubmit();
+  const inputBox = input.getBoundingClientRect();
+  const candidates = Array.from(document.querySelectorAll('button, input[type="submit"]'))
+    .filter(enabledButton)
+    .filter((button) => !providerButton(button))
+    .filter((button) => {
+      const box = button.getBoundingClientRect();
+      const sameForm = form && button.closest("form") === form;
+      const nearbyBelow = box.top >= inputBox.bottom - 8 && box.top <= inputBox.bottom + 160 && overlapsHorizontally(inputBox, box);
+      return (sameForm || nearbyBelow) && (submitButtonText(button) || button.type === "submit" || nearbyBelow);
+    })
+    .sort((a, b) => {
+      const aBox = a.getBoundingClientRect();
+      const bBox = b.getBoundingClientRect();
+      const aDistance = Math.abs(aBox.top - inputBox.bottom);
+      const bDistance = Math.abs(bBox.top - inputBox.bottom);
+      return aDistance - bDistance;
+    });
+  return candidates[0] || null;
+}
+
+function clickSubmitNear(input) {
+  const button = findSubmitButtonFor(input);
+  if (button) {
+    button.click();
+    return true;
+  }
+  const form = input.closest("form");
+  if (form && !Array.from(form.querySelectorAll("button, input[type='submit']")).some(providerButton)) {
+    form.requestSubmit();
+    return true;
+  }
+  return false;
 }
 
 function pageText() {
@@ -90,7 +140,7 @@ async function submitEmail(email) {
   const found = await waitFor(emailInput, 30000);
   if (found.status !== "ok") return found;
   setValue(found.value, email);
-  clickSubmitNear(found.value);
+  if (!clickSubmitNear(found.value)) return { status: "unexpected_page", reason: "safe_submit_not_found" };
   await wait(1200);
   return { status: "ok" };
 }
@@ -99,7 +149,7 @@ async function submitPassword(password) {
   const found = await waitFor(passwordInput, 20000);
   if (found.status !== "ok") return found;
   setValue(found.value, password);
-  clickSubmitNear(found.value);
+  if (!clickSubmitNear(found.value)) return { status: "unexpected_page", reason: "safe_submit_not_found" };
   await wait(1600);
   if (wrongPasswordVisible()) return { status: "wrong_password" };
   return { status: "ok" };
@@ -126,12 +176,12 @@ async function submitOtp(code) {
   const inputs = found.value;
   if (inputs.length === 1) {
     setValue(inputs[0], code);
-    clickSubmitNear(inputs[0]);
+    if (!clickSubmitNear(inputs[0])) return { status: "unexpected_page", reason: "safe_submit_not_found" };
   } else {
     [...String(code)].forEach((char, index) => {
       if (inputs[index]) setValue(inputs[index], char);
     });
-    clickSubmitNear(inputs[inputs.length - 1]);
+    if (!clickSubmitNear(inputs[inputs.length - 1])) return { status: "unexpected_page", reason: "safe_submit_not_found" };
   }
   await wait(4000);
   return { status: "ok" };

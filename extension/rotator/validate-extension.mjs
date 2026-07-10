@@ -41,5 +41,8 @@ assert.match(background, /captcha_encountered/);
 const contentScript = await readFile(path.join(root, "content-script.js"), "utf8");
 assert.match(contentScript, /rotatorSubmitEmail/);
 assert.match(contentScript, /rotatorSubmitOtp/);
+assert.match(contentScript, /providerButton/);
+assert.match(contentScript, /continue with/);
+assert.match(contentScript, /safe_submit_not_found/);
 
 console.log("Extension manifest and rotator flows look valid.");
