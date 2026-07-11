@@ -1558,13 +1558,32 @@ function findDomainAliasMapping(db: Db, domain: string): DomainAliasMapping | un
   return Object.values(db.domainAliasMappings).find((mapping) => mapping.domain.toLowerCase() === domain.toLowerCase());
 }
 
+function canonicalMailboxEmail(mailbox: Mailbox): string | undefined {
+  const direct = validateEmail(mailbox.email);
+  if (direct) return direct;
+  const local = normalizeLocal(mailbox.local || mailbox.email);
+  if (validateLocal(local)) return undefined;
+  const domain = String(mailbox.domain || MAIL_DOMAIN).trim().toLowerCase() || MAIL_DOMAIN;
+  return validateEmail(`${local}@${domain}`) || undefined;
+}
+
+function findConfiguredSiteAliasOwner(db: Db): Mailbox | undefined {
+  if (!ROTATOR_ALIAS_OWNER_EMAIL) return undefined;
+  const configuredEmail = validateEmail(ROTATOR_ALIAS_OWNER_EMAIL);
+  const configuredLocal = normalizeLocal(ROTATOR_ALIAS_OWNER_EMAIL);
+  const normalizedEmail = configuredEmail || (validateLocal(configuredLocal) ? "" : `${configuredLocal}@${MAIL_DOMAIN}`);
+  if (normalizedEmail && db.mailboxes[normalizedEmail]) return db.mailboxes[normalizedEmail];
+  return Object.values(db.mailboxes).find((mailbox) => {
+    const mailboxEmail = canonicalMailboxEmail(mailbox);
+    return mailboxEmail && mailboxEmail === normalizedEmail;
+  });
+}
+
 function siteAliasOwnerMailbox(db: Db): Mailbox | undefined {
-  if (ROTATOR_ALIAS_OWNER_EMAIL) {
-    const configured = db.mailboxes[ROTATOR_ALIAS_OWNER_EMAIL];
-    if (configured && configured.kind !== "temporary" && mailboxIsUsable(configured)) return configured;
-  }
+  const configured = findConfiguredSiteAliasOwner(db);
+  if (configured && configured.kind !== "temporary" && mailboxIsUsable(configured) && canonicalMailboxEmail(configured)) return configured;
   return Object.values(db.mailboxes)
-    .filter((mailbox) => mailbox.kind !== "temporary" && mailboxIsUsable(mailbox))
+    .filter((mailbox) => mailbox.kind !== "temporary" && mailboxIsUsable(mailbox) && canonicalMailboxEmail(mailbox))
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))[0];
 }
 
@@ -1584,6 +1603,8 @@ async function createDomainAliasMapping(db: Db, domain: string, device: RotatorD
   if (existing) return existing;
   const mailbox = siteAliasOwnerMailbox(db);
   if (!mailbox) throw new Error("Configure ROTATOR_ALIAS_OWNER_EMAIL or create a permanent mailbox before creating site aliases.");
+  const ownerEmail = canonicalMailboxEmail(mailbox);
+  if (!ownerEmail) throw new Error("Site alias owner mailbox must have a valid destination email address.");
   const local = nextAvailableSiteAliasLocal(db, domain);
   const alias: MailAlias = {
     id: randomToken(10),
@@ -1606,7 +1627,7 @@ async function createDomainAliasMapping(db: Db, domain: string, device: RotatorD
   };
   db.domainAliasMappings[mapping.id] = mapping;
   auditRotatorDeviceEvent(db, device.id, "site_alias_created");
-  await audit(db, device.id, "rotator_site_alias_created", { domain, alias: alias.email, owner: mailbox.email, dryRun: MAILU_DRY_RUN });
+  await audit(db, device.id, "rotator_site_alias_created", { domain, alias: alias.email, owner: ownerEmail, dryRun: MAILU_DRY_RUN });
   return mapping;
 }
 
@@ -1814,13 +1835,15 @@ async function ensureMailuAliasForwardRelay(mailbox: Mailbox, recipientEmail: st
 async function aliasDestinations(mailbox: Mailbox, alias: MailAlias): Promise<{ destinations: string[]; relayResults: MailuCreateResult[] }> {
   const relayResults: MailuCreateResult[] = [];
   const relayEmails: string[] = [];
+  const ownerEmail = canonicalMailboxEmail(mailbox);
+  if (!ownerEmail) throw new Error("Alias owner mailbox must have a valid destination email address.");
   for (const recipient of alias.forwardTo || []) {
     const result = await ensureMailuAliasForwardRelay(mailbox, recipient);
     relayResults.push(result);
     relayEmails.push(result.email);
   }
   return {
-    destinations: Array.from(new Set([mailbox.email.toLowerCase(), ...relayEmails.map((item) => item.toLowerCase())])),
+    destinations: Array.from(new Set([ownerEmail.toLowerCase(), ...relayEmails.map((item) => item.toLowerCase())])),
     relayResults
   };
 }
