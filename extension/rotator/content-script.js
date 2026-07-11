@@ -364,10 +364,30 @@ function syncChipPositions() {
   }
 }
 
+function likelyEmailInput(input) {
+  if (!inputAvailable(input) || fieldHasValue(input)) return false;
+  const type = String(input.type || "text").toLowerCase();
+  if (["button", "checkbox", "file", "hidden", "image", "password", "radio", "range", "reset", "search", "submit"].includes(type)) return false;
+  if (type === "email") return true;
+
+  const autocomplete = String(input.autocomplete || input.getAttribute("autocomplete") || "").toLowerCase();
+  if (autocomplete === "email" || autocomplete === "username") return true;
+
+  const fieldText = [
+    input.name,
+    input.id,
+    input.getAttribute("aria-label"),
+    input.getAttribute("placeholder"),
+    input.getAttribute("data-testid"),
+    input.getAttribute("data-uia")
+  ].join(" ");
+  if (/\b(e-?mail|email address|mail address|username|login id)\b/i.test(fieldText)) return true;
+  if (/\b(mobile|phone)\b/i.test(fieldText) && /\b(e-?mail|email)\b/i.test(fieldText)) return true;
+  return false;
+}
+
 function emailSuggestionInputs() {
-  return Array.from(document.querySelectorAll('input[type="email"], input[name*="email" i]'))
-    .filter(inputAvailable)
-    .filter((input) => !fieldHasValue(input));
+  return Array.from(document.querySelectorAll("input")).filter(likelyEmailInput);
 }
 
 async function ensureEmailChip(input) {

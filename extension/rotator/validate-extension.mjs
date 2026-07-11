@@ -57,6 +57,8 @@ assert.match(contentScript, /check your inbox/);
 assert.match(contentScript, /aliases\/lookup/);
 assert.match(contentScript, /aliases\/otp/);
 assert.match(contentScript, /assistantFetch/);
+assert.match(contentScript, /likelyEmailInput/);
+assert.match(contentScript, /placeholder/);
 assert.match(contentScript, /Waiting for code/);
 assert.match(contentScript, /window\.top === window\.self/);
 
