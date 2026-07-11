@@ -122,6 +122,43 @@ Device-token only.
 
 Admin-only. Returns recent session-fetch audit entries.
 
+### `GET /api/rotator/aliases/lookup?domain=:domain`
+
+Device-token only. Looks up the one site-alias mapping for a registrable
+domain. `hostname` is also accepted and normalized with the public suffix list,
+so `www.amazon.co.uk` and `smile.amazon.co.uk` both resolve to
+`amazon.co.uk`. Returns `{ alias, mapping, domain }` when present, or `404`
+with `{ domain, suggestedAlias }` when no mapping exists.
+
+### `POST /api/rotator/aliases`
+
+Device-token only. Creates the v1 one-domain-to-one-alias mapping. Body accepts
+`{ "domain": "amazon.com" }` or `{ "hostname": "www.amazon.com" }`. The server
+derives the local part, reuses the existing Mailroom alias provider path, stores
+the mapping, and returns `{ alias, mapping, domain }`. Alias local-part
+collisions are handled by suffixing (`amazon2`, `amazon3`, ...).
+
+Site aliases are attached to `ROTATOR_ALIAS_OWNER_EMAIL` when configured;
+otherwise the oldest usable permanent mailbox owns them. Removing a mapping
+does not delete the underlying alias. Multiple aliases per domain are a known
+v1 limitation.
+
+### `GET /api/rotator/aliases`
+
+Admin or device token. Lists domain-to-alias mappings for the dashboard and
+extension popup.
+
+### `DELETE /api/rotator/aliases/:id`
+
+Admin or device token. Removes only the mapping metadata. The underlying alias
+remains active until it is separately managed from the mailbox alias controls.
+
+### `GET /api/rotator/aliases/otp?alias=:email`
+
+Device-token only. Fetches the latest verification code delivered to a local
+Mailroom alias using the existing onboarding IMAP/mailbox OTP reader, without
+the OpenAI-specific keyword filter. Rate-limited and audited per device.
+
 ### `POST /api/rotator/onboarding/jobs`
 
 Admin-only. Creates a bulk onboarding job with up to 10 items. Passwords are

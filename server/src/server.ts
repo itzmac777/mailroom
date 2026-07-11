@@ -8,6 +8,7 @@ import tls from "node:tls";
 import { fileURLToPath } from "node:url";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import psl from "psl";
 
 type JsonObject = Record<string, unknown>;
 
@@ -251,6 +252,14 @@ type RotatorMailboxCredential = {
   updatedAt: string;
 };
 
+type DomainAliasMapping = {
+  id: string;
+  domain: string;
+  alias: string;
+  createdAt: string;
+  lastUsedAt: string;
+};
+
 type RotatorAuditEntry = {
   id: string;
   at: string;
@@ -258,7 +267,14 @@ type RotatorAuditEntry = {
   accountId?: string;
   jobId?: string;
   itemId?: string;
-  event: "session_fetched" | "onboarding_credential_claimed" | "onboarding_otp_fetch";
+  event:
+    | "session_fetched"
+    | "onboarding_credential_claimed"
+    | "onboarding_otp_fetch"
+    | "site_alias_created"
+    | "site_alias_lookup"
+    | "site_alias_otp_fetch"
+    | "site_alias_mapping_deleted";
 };
 
 type PublicRotatorAccount = RotatorAccount & {
@@ -279,6 +295,7 @@ type Db = {
   rotatorOnboardingJobs: Record<string, RotatorOnboardingJob>;
   rotatorOnboardingCredentials: Record<string, RotatorOnboardingCredential>;
   rotatorMailboxCredentials: Record<string, RotatorMailboxCredential>;
+  domainAliasMappings: Record<string, DomainAliasMapping>;
   rotatorAudit: RotatorAuditEntry[];
   audit: AuditEntry[];
 };
@@ -393,6 +410,7 @@ const ROTATOR_ONBOARDING_CREDENTIAL_TTL_MS = 60 * 60 * 1000;
 const ROTATOR_ZENVY_IMAP_MASTER_USER = String(env.ROTATOR_ZENVY_IMAP_MASTER_USER || "").trim();
 const ROTATOR_ZENVY_IMAP_MASTER_PASSWORD = String(env.ROTATOR_ZENVY_IMAP_MASTER_PASSWORD || "");
 const ROTATOR_ZENVY_IMAP_AUTH_FORMAT = String(env.ROTATOR_ZENVY_IMAP_AUTH_FORMAT || "{email}*{masterUser}");
+const ROTATOR_ALIAS_OWNER_EMAIL = String(env.ROTATOR_ALIAS_OWNER_EMAIL || "").trim().toLowerCase();
 const TEMP_MAIL_ENABLED = String(env.TEMP_MAIL_ENABLED ?? "false").toLowerCase() === "true";
 const TEMP_QUOTA_MB = Number(env.TEMP_QUOTA_MB || 128);
 const TEMP_OUTBOUND_DAILY_LIMIT = 0;
@@ -963,6 +981,27 @@ function rotatorOnboardingJobList(db: Db): RotatorOnboardingJob[] {
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
 
+function publicDomainAliasMapping(mapping: DomainAliasMapping): DomainAliasMapping {
+  return { ...mapping };
+}
+
+function domainAliasMappingList(db: Db): DomainAliasMapping[] {
+  return Object.values(db.domainAliasMappings)
+    .map(publicDomainAliasMapping)
+    .sort((a, b) => String(b.lastUsedAt || b.createdAt).localeCompare(String(a.lastUsedAt || a.createdAt)));
+}
+
+function auditRotatorDeviceEvent(db: Db, deviceId: string, event: RotatorAuditEntry["event"], details: Partial<RotatorAuditEntry> = {}): void {
+  db.rotatorAudit.unshift({
+    id: randomToken(10),
+    at: nowIso(),
+    deviceId,
+    ...details,
+    event
+  });
+  db.rotatorAudit = db.rotatorAudit.slice(0, 1000);
+}
+
 function rotatorAccountByEmail(db: Db, email: string): RotatorAccount | undefined {
   return Object.values(db.rotatorAccounts).find((account) => account.email.toLowerCase() === email.toLowerCase());
 }
@@ -1300,11 +1339,11 @@ async function rotateZenvyMailboxPassword(db: Db, email: string): Promise<string
   return password;
 }
 
-async function fetchZenvyOnboardingOtp(db: Db, email: string): Promise<VerificationMatch | undefined> {
+async function fetchZenvyOnboardingOtp(db: Db, email: string, keyword = "openai"): Promise<VerificationMatch | undefined> {
   const storedPassword = getRotatorMailboxPassword(db, email);
   if (storedPassword) {
     try {
-      return await fetchVerificationViaImap(email, storedPassword, email, "openai");
+      return await fetchVerificationViaImap(email, storedPassword, email, keyword);
     } catch {
       delete db.rotatorMailboxCredentials[rotatorMailboxCredentialKey(email)];
     }
@@ -1313,11 +1352,11 @@ async function fetchZenvyOnboardingOtp(db: Db, email: string): Promise<Verificat
   if (!ROTATOR_ZENVY_IMAP_MASTER_USER || !ROTATOR_ZENVY_IMAP_MASTER_PASSWORD) {
     const password = await rotateZenvyMailboxPassword(db, email);
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    return fetchVerificationViaImap(email, password, email, "openai");
+    return fetchVerificationViaImap(email, password, email, keyword);
   }
   if (ROTATOR_ZENVY_IMAP_MASTER_PASSWORD !== "your-master-imap-password") {
     try {
-      return await fetchVerificationViaImap(zenvyImapAuthUser(email), ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, "openai");
+      return await fetchVerificationViaImap(zenvyImapAuthUser(email), ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, email, keyword);
     } catch {
       // Fall through to a Mailu password rotation when Dovecot master-user auth is not enabled.
     }
@@ -1326,7 +1365,7 @@ async function fetchZenvyOnboardingOtp(db: Db, email: string): Promise<Verificat
   const password = await rotateZenvyMailboxPassword(db, email);
   try {
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    return await fetchVerificationViaImap(email, password, email, "openai");
+    return await fetchVerificationViaImap(email, password, email, keyword);
   } catch (error) {
     throw new Error(`Mailu password reset succeeded, but IMAP login still failed: ${cleanImapError(error)}`);
   }
@@ -1370,6 +1409,7 @@ async function ensureDb(): Promise<void> {
       rotatorOnboardingJobs: {},
       rotatorOnboardingCredentials: {},
       rotatorMailboxCredentials: {},
+      domainAliasMappings: {},
       rotatorAudit: [],
       audit: []
     };
@@ -1392,6 +1432,7 @@ async function readDb(): Promise<Db> {
   db.rotatorOnboardingJobs ||= {};
   db.rotatorOnboardingCredentials ||= {};
   db.rotatorMailboxCredentials ||= {};
+  db.domainAliasMappings ||= {};
   db.rotatorAudit ||= [];
   db.audit ||= [];
   db.rotatorAudit = db.rotatorAudit.slice(0, 1000);
@@ -1486,6 +1527,89 @@ function validateLocal(local: string): string | null {
   if (RESERVED.has(value)) return "That address is reserved.";
   return null;
 }
+
+function registrableDomainFrom(value: unknown): string {
+  let raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = new URL(raw).hostname;
+  } catch {
+    return "";
+  }
+  raw = raw.replace(/^\.+|\.+$/g, "");
+  if (!raw || raw === "localhost" || /^[0-9.]+$/.test(raw) || raw.includes(":")) return "";
+  const parsed = psl.get(raw);
+  return parsed || "";
+}
+
+function siteAliasBaseLocal(domain: string): string {
+  const parsed = psl.parse(domain);
+  const sld = typeof parsed === "object" && "sld" in parsed && parsed.sld ? String(parsed.sld) : domain.split(".")[0];
+  const normalized = normalizeLocal(sld.replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, ""));
+  if (normalized.length >= 3) return normalized.slice(0, 28);
+  return `${normalized || "site"}mail`.slice(0, 28);
+}
+
+function suggestedSiteAliasEmail(domain: string): string {
+  return `${siteAliasBaseLocal(domain)}@${MAIL_DOMAIN}`;
+}
+
+function findDomainAliasMapping(db: Db, domain: string): DomainAliasMapping | undefined {
+  return Object.values(db.domainAliasMappings).find((mapping) => mapping.domain.toLowerCase() === domain.toLowerCase());
+}
+
+function siteAliasOwnerMailbox(db: Db): Mailbox | undefined {
+  if (ROTATOR_ALIAS_OWNER_EMAIL) {
+    const configured = db.mailboxes[ROTATOR_ALIAS_OWNER_EMAIL];
+    if (configured && configured.kind !== "temporary" && mailboxIsUsable(configured)) return configured;
+  }
+  return Object.values(db.mailboxes)
+    .filter((mailbox) => mailbox.kind !== "temporary" && mailboxIsUsable(mailbox))
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))[0];
+}
+
+function nextAvailableSiteAliasLocal(db: Db, domain: string): string {
+  const base = siteAliasBaseLocal(domain);
+  for (let index = 1; index <= 99; index += 1) {
+    const suffix = index === 1 ? "" : String(index);
+    const local = `${base.slice(0, 32 - suffix.length)}${suffix}`;
+    const error = validateLocal(local);
+    if (!error && !aliasEmailExists(db, `${local}@${MAIL_DOMAIN}`)) return local;
+  }
+  throw new Error("Could not find an available alias local part for this site.");
+}
+
+async function createDomainAliasMapping(db: Db, domain: string, device: RotatorDevice): Promise<DomainAliasMapping> {
+  const existing = findDomainAliasMapping(db, domain);
+  if (existing) return existing;
+  const mailbox = siteAliasOwnerMailbox(db);
+  if (!mailbox) throw new Error("Configure ROTATOR_ALIAS_OWNER_EMAIL or create a permanent mailbox before creating site aliases.");
+  const local = nextAvailableSiteAliasLocal(db, domain);
+  const alias: MailAlias = {
+    id: randomToken(10),
+    local,
+    email: `${local}@${MAIL_DOMAIN}`,
+    label: `Site alias for ${domain}`,
+    status: "active",
+    forwardTo: [],
+    createdAt: nowIso()
+  };
+  alias.providerResult = await upsertMailuAlias(mailbox, alias, true);
+  mailbox.aliases ||= [];
+  mailbox.aliases.push(alias);
+  const mapping: DomainAliasMapping = {
+    id: randomToken(10),
+    domain,
+    alias: alias.email,
+    createdAt: nowIso(),
+    lastUsedAt: nowIso()
+  };
+  db.domainAliasMappings[mapping.id] = mapping;
+  auditRotatorDeviceEvent(db, device.id, "site_alias_created");
+  await audit(db, device.id, "rotator_site_alias_created", { domain, alias: alias.email, owner: mailbox.email, dryRun: MAILU_DRY_RUN });
+  return mapping;
+}
+
 function activeAliases(mailbox: Mailbox): MailAlias[] {
   return (mailbox.aliases || []).filter((alias) => alias.status === "active" && !alias.disabledAt);
 }
@@ -2596,6 +2720,96 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
       workingFormat: working?.format || null,
       attempts
     });
+  }
+
+  if (url.pathname === "/api/rotator/aliases/lookup") {
+    if (!device) return json(res, 401, { error: "Device token required." });
+    if (req.method !== "GET") return json(res, 404, { error: "Not found." });
+    if (!rateLimitKey(`rotator-alias-lookup:${device.id}`, 240, 15 * 60 * 1000)) {
+      await writeDb(db);
+      return json(res, 429, { error: "Too many alias lookups. Try again later." });
+    }
+    const domain = registrableDomainFrom(url.searchParams.get("domain") || url.searchParams.get("hostname"));
+    if (!domain) return json(res, 400, { error: "A registrable domain or hostname is required." });
+    const mapping = findDomainAliasMapping(db, domain);
+    if (!mapping) {
+      await writeDb(db);
+      return json(res, 404, { error: "No alias mapping exists for this domain.", domain, suggestedAlias: suggestedSiteAliasEmail(domain) });
+    }
+    mapping.lastUsedAt = nowIso();
+    auditRotatorDeviceEvent(db, device.id, "site_alias_lookup");
+    await audit(db, device.id, "rotator_site_alias_lookup", { domain, alias: mapping.alias });
+    await writeDb(db);
+    return json(res, 200, { alias: mapping.alias, mapping: publicDomainAliasMapping(mapping), domain });
+  }
+
+  if (url.pathname === "/api/rotator/aliases/otp") {
+    if (!device) return json(res, 401, { error: "Device token required." });
+    if (req.method !== "GET") return json(res, 404, { error: "Not found." });
+    if (!rateLimitKey(`rotator-alias-otp:${device.id}`, 60, 15 * 60 * 1000)) {
+      await writeDb(db);
+      return json(res, 429, { error: "Too many OTP fetches. Try again later." });
+    }
+    const alias = validateEmail(url.searchParams.get("alias"));
+    if (!alias) return json(res, 400, { error: "A valid alias query parameter is required." });
+    if (!isZenvyOnboardingEmail(alias)) return json(res, 400, { error: `Alias must belong to ${MAIL_DOMAIN} or zenvy.com.bd.` });
+    try {
+      const match = await fetchZenvyOnboardingOtp(db, alias, "");
+      auditRotatorDeviceEvent(db, device.id, "site_alias_otp_fetch");
+      await audit(db, device.id, "rotator_site_alias_otp_fetch", { alias, found: Boolean(match?.code) });
+      await writeDb(db);
+      if (!match?.code) return json(res, 404, { error: "No OTP found yet." });
+      return json(res, 200, {
+        code: match.code,
+        match: { subject: match.subject, from: match.from, date: match.date, confidence: match.confidence }
+      });
+    } catch (error) {
+      await audit(db, device.id, "rotator_site_alias_otp_fetch_failed", { alias, message: error instanceof Error ? error.message : String(error) });
+      await writeDb(db);
+      return json(res, 502, { error: error instanceof Error ? error.message : "OTP fetch failed." });
+    }
+  }
+
+  if (url.pathname === "/api/rotator/aliases") {
+    if (req.method === "GET") {
+      if (!isAdmin && !device) return json(res, 401, { error: "Rotator authorization required." });
+      if (device) await writeDb(db);
+      return json(res, 200, { mappings: domainAliasMappingList(db) });
+    }
+
+    if (req.method === "POST") {
+      if (!device) return json(res, 401, { error: "Device token required." });
+      if (!rateLimitKey(`rotator-alias-create:${device.id}`, 30, 15 * 60 * 1000)) {
+        await writeDb(db);
+        return json(res, 429, { error: "Too many alias creations. Try again later." });
+      }
+      const body = await parseBody(req);
+      const domain = registrableDomainFrom(body.domain || body.hostname);
+      if (!domain) return json(res, 400, { error: "A registrable domain or hostname is required." });
+      try {
+        const existed = Boolean(findDomainAliasMapping(db, domain));
+        const mapping = await createDomainAliasMapping(db, domain, device);
+        await writeDb(db);
+        return json(res, existed ? 200 : 201, { alias: mapping.alias, mapping: publicDomainAliasMapping(mapping), domain });
+      } catch (error) {
+        await writeDb(db);
+        return json(res, 424, { error: error instanceof Error ? error.message : "Alias provider setup failed." });
+      }
+    }
+  }
+
+  const domainAliasRoute = url.pathname.match(/^\/api\/rotator\/aliases\/([^/]+)$/);
+  if (domainAliasRoute) {
+    if (!isAdmin && !device) return json(res, 401, { error: "Rotator authorization required." });
+    if (req.method !== "DELETE") return json(res, 404, { error: "Not found." });
+    const id = decodeURIComponent(domainAliasRoute[1]);
+    const mapping = db.domainAliasMappings[id];
+    if (!mapping) return json(res, 404, { error: "Alias mapping not found." });
+    delete db.domainAliasMappings[id];
+    if (device) auditRotatorDeviceEvent(db, device.id, "site_alias_mapping_deleted");
+    await audit(db, device?.id || "admin", "rotator_site_alias_mapping_deleted", { domain: mapping.domain, alias: mapping.alias });
+    await writeDb(db);
+    return json(res, 200, { deleted: true, mapping: publicDomainAliasMapping(mapping) });
   }
 
   if (url.pathname === "/api/rotator/onboarding/jobs") {

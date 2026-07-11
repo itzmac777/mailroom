@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "imapflow": "^1.0.156",
-    "mailparser": "^3.7.1"
+    "mailparser": "^3.7.1",
+    "psl": "^1.15.0"
   },
   "engines": {
     "node": ">=22"

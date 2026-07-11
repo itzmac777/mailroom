@@ -65,7 +65,10 @@ async function mailroomFetch(path, options = {}) {
   }
   if (!response.ok) {
     const detail = payload.error || text.replace(/\s+/g, " ").trim().slice(0, 240) || response.statusText || "Mailroom request failed.";
-    throw new Error(`Mailroom ${response.status}: ${detail}`);
+    const error = new Error(`Mailroom ${response.status}: ${detail}`);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }

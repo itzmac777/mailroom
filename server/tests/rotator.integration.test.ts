@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -68,6 +68,72 @@ test("rotator device, account, session, audit, and revocation flow", async () =>
     const accountId = createdAccount.payload.account.id;
     const deviceToken = createdDevice.payload.token;
     const deviceHeaders = { authorization: `Bearer ${deviceToken}` };
+
+    const seededDb = JSON.parse(await readFile(dbPath, "utf8"));
+    seededDb.mailboxes["owner@example.com"] = {
+      id: "owner",
+      local: "owner",
+      domain: "example.com",
+      email: "owner@example.com",
+      displayName: "Owner",
+      kind: "permanent",
+      status: "dry-run",
+      quotaMb: 1024,
+      outboundDailyLimit: 50,
+      passwordHash: "unused",
+      createdAt: new Date().toISOString(),
+      webmailUrl: "https://mail.example.com/webmail/",
+      aliases: [],
+      aliasLimit: 5,
+      forwardingEnabled: false,
+      forwardTo: [],
+      providerResult: { provider: "dry-run" }
+    };
+    await writeFile(dbPath, JSON.stringify(seededDb, null, 2));
+
+    const missingAlias = await request(baseUrl, "/api/rotator/aliases/lookup?hostname=www.amazon.co.uk", {
+      headers: deviceHeaders
+    });
+    assert.equal(missingAlias.response.status, 404);
+    assert.equal(missingAlias.payload.domain, "amazon.co.uk");
+    assert.match(missingAlias.payload.suggestedAlias, /^amazon@/);
+    const expectedAmazonAlias = missingAlias.payload.suggestedAlias;
+
+    const createdAlias = await request(baseUrl, "/api/rotator/aliases", {
+      method: "POST",
+      headers: deviceHeaders,
+      body: JSON.stringify({ hostname: "smile.amazon.co.uk" })
+    });
+    assert.equal(createdAlias.response.status, 201);
+    assert.equal(createdAlias.payload.domain, "amazon.co.uk");
+    assert.equal(createdAlias.payload.alias, expectedAmazonAlias);
+
+    const foundAlias = await request(baseUrl, "/api/rotator/aliases/lookup?hostname=www.amazon.co.uk", {
+      headers: deviceHeaders
+    });
+    assert.equal(foundAlias.response.status, 200);
+    assert.equal(foundAlias.payload.alias, expectedAmazonAlias);
+
+    const listedAliases = await request(baseUrl, "/api/rotator/aliases", {
+      headers: deviceHeaders
+    });
+    assert.equal(listedAliases.response.status, 200);
+    assert.equal(listedAliases.payload.mappings.length, 1);
+
+    const removedAliasMapping = await request(baseUrl, `/api/rotator/aliases/${listedAliases.payload.mappings[0].id}`, {
+      method: "DELETE",
+      headers: deviceHeaders
+    });
+    assert.equal(removedAliasMapping.response.status, 200);
+
+    const lookupAfterRemoval = await request(baseUrl, "/api/rotator/aliases/lookup?domain=amazon.co.uk", {
+      headers: deviceHeaders
+    });
+    assert.equal(lookupAfterRemoval.response.status, 404);
+
+    const dbAfterMappingRemoval = JSON.parse(await readFile(dbPath, "utf8"));
+    assert.equal(dbAfterMappingRemoval.mailboxes["owner@example.com"].aliases.length, 1);
+    assert.equal(dbAfterMappingRemoval.mailboxes["owner@example.com"].aliases[0].email, expectedAmazonAlias);
 
     const tooLargeJob = await request(baseUrl, "/api/rotator/onboarding/jobs", {
       method: "POST",

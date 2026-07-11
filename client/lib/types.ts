@@ -100,6 +100,14 @@ export type RotatorDevice = {
   lastSeenAt?: string;
 };
 
+export type DomainAliasMapping = {
+  id: string;
+  domain: string;
+  alias: string;
+  createdAt: string;
+  lastUsedAt: string;
+};
+
 export type RotatorAuditEntry = {
   id: string;
   at: string;
@@ -107,7 +115,14 @@ export type RotatorAuditEntry = {
   accountId?: string;
   jobId?: string;
   itemId?: string;
-  event: "session_fetched" | "onboarding_credential_claimed" | "onboarding_otp_fetch";
+  event:
+    | "session_fetched"
+    | "onboarding_credential_claimed"
+    | "onboarding_otp_fetch"
+    | "site_alias_created"
+    | "site_alias_lookup"
+    | "site_alias_otp_fetch"
+    | "site_alias_mapping_deleted";
 };
 
 export type RotatorOnboardingItem = {

@@ -29,10 +29,11 @@
   "content_scripts": [
     {
       "matches": [
-        "https://chatgpt.com/*",
-        "https://*.openai.com/*"
+        "http://*/*",
+        "https://*/*"
       ],
       "js": [
+        "shared.js",
         "content-script.js"
       ],
       "run_at": "document_idle"

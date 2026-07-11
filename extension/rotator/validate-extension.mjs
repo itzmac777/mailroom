@@ -16,7 +16,8 @@ assert.ok(manifest.permissions.includes("tabs"));
 assert.ok(manifest.host_permissions.includes("https://chatgpt.com/*"));
 assert.ok(manifest.host_permissions.includes("https://*.openai.com/*"));
 assert.ok(manifest.optional_host_permissions.includes("https://*/*"));
-assert.ok(manifest.content_scripts.some((script) => script.js.includes("content-script.js")));
+assert.ok(manifest.content_scripts.some((script) => script.matches.includes("https://*/*")));
+assert.ok(manifest.content_scripts.some((script) => script.js.includes("shared.js") && script.js.includes("content-script.js")));
 
 const shared = await readFile(path.join(root, "shared.js"), "utf8");
 assert.match(shared, /chrome\.storage\.local/);
@@ -31,6 +32,7 @@ assert.match(shared, /backend-api\/me/);
 const popup = await readFile(path.join(root, "popup.js"), "utf8");
 assert.match(popup, /\/api\/rotator\/accounts/);
 assert.match(popup, /\/api\/rotator\/onboarding\/jobs/);
+assert.match(popup, /\/api\/rotator\/aliases/);
 assert.match(popup, /\/session/);
 assert.match(popup, /mark-status/);
 
@@ -42,6 +44,7 @@ assert.match(background, /captcha_encountered/);
 assert.match(background, /reachedOtpPage/);
 assert.match(background, /needs manual finish/);
 assert.match(background, /errorDetail/);
+assert.match(background, /mailroomFetch/);
 
 const contentScript = await readFile(path.join(root, "content-script.js"), "utf8");
 assert.match(contentScript, /rotatorSubmitEmail/);
@@ -51,5 +54,10 @@ assert.match(contentScript, /continue with/);
 assert.match(contentScript, /safe_submit_not_found/);
 assert.match(contentScript, /inboxVerificationPage/);
 assert.match(contentScript, /check your inbox/);
+assert.match(contentScript, /aliases\/lookup/);
+assert.match(contentScript, /aliases\/otp/);
+assert.match(contentScript, /assistantFetch/);
+assert.match(contentScript, /Waiting for code/);
+assert.match(contentScript, /window\.top === window\.self/);
 
 console.log("Extension manifest and rotator flows look valid.");

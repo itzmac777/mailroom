@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import type { RotatorAccount, RotatorAuditEntry, RotatorDevice, RotatorOnboardingJob } from "@/lib/types";
+import type { DomainAliasMapping, RotatorAccount, RotatorAuditEntry, RotatorDevice, RotatorOnboardingJob } from "@/lib/types";
 
 type RotatorData = {
   accounts: RotatorAccount[];
   devices: RotatorDevice[];
   audit: RotatorAuditEntry[];
   jobs: RotatorOnboardingJob[];
+  aliases: DomainAliasMapping[];
 };
 
 const statusTone: Record<RotatorAccount["status"], string> = {
@@ -52,7 +53,7 @@ function parseBulkLines(value: string): Array<{ email: string; password?: string
 
 export function RotatorAdminPanel() {
   const [token, setToken] = useState("");
-  const [data, setData] = useState<RotatorData>({ accounts: [], devices: [], audit: [], jobs: [] });
+  const [data, setData] = useState<RotatorData>({ accounts: [], devices: [], audit: [], jobs: [], aliases: [] });
   const [message, setMessage] = useState("Enter the admin token and refresh.");
   const [busy, setBusy] = useState(false);
   const [issuedToken, setIssuedToken] = useState<{ name: string; token: string } | null>(null);
@@ -77,17 +78,19 @@ export function RotatorAdminPanel() {
     setBusy(true);
     setMessage("Refreshing...");
     try {
-      const [accountsResult, devicesResult, auditResult, jobsResult] = await Promise.all([
+      const [accountsResult, devicesResult, auditResult, jobsResult, aliasesResult] = await Promise.all([
         api<{ accounts: RotatorAccount[] }>("/api/rotator/accounts", { headers: { "x-admin-token": currentToken } }),
         api<{ devices: RotatorDevice[] }>("/api/rotator/devices", { headers: { "x-admin-token": currentToken } }),
         api<{ audit: RotatorAuditEntry[] }>("/api/rotator/audit", { headers: { "x-admin-token": currentToken } }),
-        api<{ jobs: RotatorOnboardingJob[] }>("/api/rotator/onboarding/jobs", { headers: { "x-admin-token": currentToken } })
+        api<{ jobs: RotatorOnboardingJob[] }>("/api/rotator/onboarding/jobs", { headers: { "x-admin-token": currentToken } }),
+        api<{ mappings: DomainAliasMapping[] }>("/api/rotator/aliases", { headers: { "x-admin-token": currentToken } })
       ]);
       setData({
         accounts: accountsResult.accounts,
         devices: devicesResult.devices,
         audit: auditResult.audit,
-        jobs: jobsResult.jobs
+        jobs: jobsResult.jobs,
+        aliases: aliasesResult.mappings
       });
       setMessage("");
     } catch (error) {
@@ -274,6 +277,24 @@ export function RotatorAdminPanel() {
     }
   }
 
+  async function deleteDomainAlias(mapping: DomainAliasMapping) {
+    if (!confirm(`Remove the mapping for ${mapping.domain}? The alias ${mapping.alias} will stay active.`)) return;
+    setBusy(true);
+    setMessage("Removing site alias mapping...");
+    try {
+      await api<{ deleted: boolean }>(`/api/rotator/aliases/${encodeURIComponent(mapping.id)}`, {
+        method: "DELETE",
+        headers: { "x-admin-token": token }
+      });
+      await refresh(token);
+      setMessage("Site alias mapping removed.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not remove site alias mapping.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="grid gap-8 p-12 max-md:p-5">
       <div className="grid grid-cols-[minmax(280px,0.55fr)_minmax(0,1fr)] gap-8 max-lg:grid-cols-1">
@@ -291,7 +312,7 @@ export function RotatorAdminPanel() {
           <p className="min-h-6 text-sm font-bold text-muted">{message}</p>
         </div>
 
-        <div className="grid grid-cols-3 gap-px border border-ink bg-ink max-md:grid-cols-1">
+        <div className="grid grid-cols-4 gap-px border border-ink bg-ink max-md:grid-cols-1">
           <div className="grid gap-1 bg-paper p-5">
             <span className="text-xs font-bold uppercase text-muted">Accounts</span>
             <strong className="text-3xl">{data.accounts.length}</strong>
@@ -303,6 +324,10 @@ export function RotatorAdminPanel() {
           <div className="grid gap-1 bg-paper p-5">
             <span className="text-xs font-bold uppercase text-muted">Devices</span>
             <strong className="text-3xl">{data.devices.length}</strong>
+          </div>
+          <div className="grid gap-1 bg-paper p-5">
+            <span className="text-xs font-bold uppercase text-muted">Site aliases</span>
+            <strong className="text-3xl">{data.aliases.length}</strong>
           </div>
         </div>
       </div>
@@ -392,6 +417,28 @@ export function RotatorAdminPanel() {
           })}
             </>
           ) : <p className="text-muted">No onboarding jobs yet.</p>}
+        </div>
+      </div>
+
+      <div className="panel p-7">
+        <div className="mb-6">
+          <p className="eyebrow">Site Aliases</p>
+          <h2 className="text-2xl font-extrabold">Domain mappings</h2>
+        </div>
+        <div className="grid border-t border-line">
+          {data.aliases.length ? data.aliases.map((mapping) => (
+            <div key={mapping.id} className="grid grid-cols-[1fr_1fr_auto_auto] items-center gap-3 border-b border-line py-4 text-sm max-lg:grid-cols-1">
+              <div>
+                <strong>{mapping.domain}</strong>
+                <p className="mt-1 text-xs text-muted">Created {formatDate(mapping.createdAt)}</p>
+              </div>
+              <p className="break-all font-mono text-xs">{mapping.alias}</p>
+              <span className="text-xs font-bold text-muted">Last used {formatDate(mapping.lastUsedAt)}</span>
+              <button className="button button-secondary min-h-[38px] px-4" type="button" onClick={() => deleteDomainAlias(mapping)} disabled={busy || !token}>
+                Remove mapping
+              </button>
+            </div>
+          )) : <p className="py-8 text-muted">No site aliases yet.</p>}
         </div>
       </div>
 

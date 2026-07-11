@@ -220,3 +220,308 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   });
   return true;
 });
+
+const MAILROOM_ASSISTANT_CLASS = "mailroom-assist-chip";
+const MAILROOM_DISMISS_CLASS = "mailroom-assist-dismiss";
+const assistantChips = new Map();
+const otpPolls = new WeakMap();
+let aliasLookupPromise = null;
+let publicConfigPromise = null;
+
+async function assistantFetch(path, options = {}) {
+  const response = await chrome.runtime.sendMessage({ type: "mailroomFetch", path, options });
+  if (response?.ok) return response.payload;
+  const error = new Error(response?.message || "Mailroom request failed.");
+  error.status = response?.status;
+  error.payload = response?.payload;
+  throw error;
+}
+
+function installAssistantStyles() {
+  if (document.getElementById("mailroom-assist-styles")) return;
+  const style = document.createElement("style");
+  style.id = "mailroom-assist-styles";
+  style.textContent = `
+    .${MAILROOM_ASSISTANT_CLASS} {
+      position: absolute;
+      z-index: 2147483647;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: min(360px, calc(100vw - 20px));
+      min-height: 30px;
+      border: 1px solid #c9cbd8;
+      background: #ffffff;
+      color: #111111;
+      box-shadow: 0 6px 22px rgba(15, 23, 42, 0.16);
+      padding: 4px 6px 4px 10px;
+      font: 700 12px/1.25 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .${MAILROOM_ASSISTANT_CLASS} button {
+      all: unset;
+      box-sizing: border-box;
+      cursor: pointer;
+      color: inherit;
+    }
+    .${MAILROOM_ASSISTANT_CLASS} [data-mailroom-action] {
+      overflow-wrap: anywhere;
+    }
+    .${MAILROOM_ASSISTANT_CLASS} .${MAILROOM_DISMISS_CLASS} {
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      border-left: 1px solid #e4e6ef;
+      color: #5f6368;
+      font-size: 16px;
+      line-height: 1;
+    }
+  `;
+  document.documentElement.append(style);
+}
+
+function assistantEligibleFrame() {
+  return window.top === window.self;
+}
+
+function inputAvailable(input) {
+  return input instanceof HTMLInputElement && visible(input) && !input.disabled && !input.readOnly && input.getAttribute("aria-disabled") !== "true";
+}
+
+function fieldHasValue(input) {
+  return String(input.value || "").trim().length > 0;
+}
+
+function backendLookupForPage() {
+  if (!aliasLookupPromise) {
+    aliasLookupPromise = assistantFetch(`/api/rotator/aliases/lookup?hostname=${encodeURIComponent(location.hostname)}`)
+      .then((result) => ({
+        mode: "use",
+        alias: result.alias,
+        domain: result.domain
+      }))
+      .catch((error) => {
+        if (error?.status === 404 && error.payload?.domain) {
+          return {
+            mode: "create",
+            alias: error.payload.suggestedAlias || "",
+            domain: error.payload.domain
+          };
+        }
+        throw error;
+      });
+  }
+  return aliasLookupPromise;
+}
+
+function backendConfig() {
+  if (!publicConfigPromise) {
+    publicConfigPromise = assistantFetch("/api/public-config").catch(() => ({ mailDomain: "zenvy.com.bd" }));
+  }
+  return publicConfigPromise;
+}
+
+function positionChip(input, chip) {
+  if (!document.documentElement.contains(input)) {
+    chip.remove();
+    assistantChips.delete(input);
+    return;
+  }
+  const box = input.getBoundingClientRect();
+  chip.style.top = `${Math.max(8, window.scrollY + box.bottom + 6)}px`;
+  chip.style.left = `${Math.max(8, Math.min(window.scrollX + box.left, window.scrollX + document.documentElement.clientWidth - chip.offsetWidth - 8))}px`;
+}
+
+function removeChip(input) {
+  const chip = assistantChips.get(input);
+  if (chip) chip.remove();
+  assistantChips.delete(input);
+}
+
+function createChip(input, label, onClick) {
+  removeChip(input);
+  installAssistantStyles();
+  const chip = document.createElement("span");
+  chip.className = MAILROOM_ASSISTANT_CLASS;
+  chip.innerHTML = `
+    <button type="button" data-mailroom-action></button>
+    <button type="button" class="${MAILROOM_DISMISS_CLASS}" aria-label="Dismiss Mailroom suggestion" title="Dismiss">x</button>
+  `;
+  const action = chip.querySelector("[data-mailroom-action]");
+  action.textContent = label;
+  action.addEventListener("mousedown", (event) => event.preventDefault());
+  action.addEventListener("click", () => onClick(action));
+  chip.querySelector(`.${MAILROOM_DISMISS_CLASS}`).addEventListener("click", () => removeChip(input));
+  document.documentElement.append(chip);
+  assistantChips.set(input, chip);
+  requestAnimationFrame(() => positionChip(input, chip));
+  return chip;
+}
+
+function syncChipPositions() {
+  for (const [input, chip] of assistantChips.entries()) {
+    positionChip(input, chip);
+  }
+}
+
+function emailSuggestionInputs() {
+  return Array.from(document.querySelectorAll('input[type="email"], input[name*="email" i]'))
+    .filter(inputAvailable)
+    .filter((input) => !fieldHasValue(input));
+}
+
+async function ensureEmailChip(input) {
+  if (assistantChips.has(input)) return;
+  let lookup;
+  try {
+    lookup = await backendLookupForPage();
+  } catch {
+    return;
+  }
+  if (!inputAvailable(input) || fieldHasValue(input)) return;
+  const useExisting = lookup.mode === "use";
+  const label = useExisting
+    ? `Use ${lookup.alias}`
+    : `Create ${lookup.alias || "an alias"} for this site?`;
+  createChip(input, label, async (action) => {
+    try {
+      action.textContent = useExisting ? `Filling ${lookup.alias}...` : "Creating alias...";
+      const result = useExisting
+        ? lookup
+        : await assistantFetch("/api/rotator/aliases", {
+          method: "POST",
+          body: JSON.stringify({ hostname: location.hostname })
+        });
+      if (result.alias) {
+        setValue(input, result.alias);
+        removeChip(input);
+        aliasLookupPromise = Promise.resolve({ mode: "use", alias: result.alias, domain: result.domain || lookup.domain });
+      }
+    } catch (error) {
+      action.textContent = error instanceof Error ? error.message.slice(0, 120) : "Could not fill alias.";
+    }
+  });
+}
+
+function textNear(input) {
+  const form = input.closest("form");
+  const parent = input.closest("label, div, section, main") || input.parentElement;
+  return [
+    input.getAttribute("aria-label"),
+    input.getAttribute("placeholder"),
+    input.name,
+    input.id,
+    form?.innerText,
+    parent?.innerText
+  ].join(" ").replace(/\s+/g, " ").slice(0, 1200);
+}
+
+function likelyOtpInput(input) {
+  if (!inputAvailable(input) || fieldHasValue(input)) return false;
+  const autocomplete = String(input.autocomplete || input.getAttribute("autocomplete") || "").toLowerCase();
+  if (autocomplete === "one-time-code") return true;
+  const nearby = textNear(input);
+  const nearbyCodeSignal = /\b(verification code|enter code|security code|one[-\s]?time code|otp|2fa|two[-\s]?factor)\b/i.test(nearby);
+  if (!nearbyCodeSignal) return false;
+  const maxLength = Number(input.getAttribute("maxlength") || input.maxLength || 0);
+  const numericHint = /^(tel|number)$/i.test(input.type || "") || /numeric|decimal/i.test(input.inputMode || "") || /\b(code|otp|pin)\b/i.test(`${input.name} ${input.id} ${input.placeholder}`);
+  return numericHint && (!maxLength || (maxLength >= 1 && maxLength <= 8));
+}
+
+function otpSuggestionInputs() {
+  return Array.from(document.querySelectorAll("input")).filter(likelyOtpInput);
+}
+
+async function visibleMailroomAliasOnPage() {
+  const config = await backendConfig();
+  const domains = Array.from(new Set(["zenvy.com.bd", config.mailDomain].filter(Boolean).map((item) => String(item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))));
+  if (!domains.length) return "";
+  const pattern = new RegExp(`\\b[a-z0-9._%+-]+@(?:${domains.join("|")})\\b`, "i");
+  return (document.body?.innerText || "").match(pattern)?.[0]?.toLowerCase() || "";
+}
+
+async function relevantAliasForOtp() {
+  try {
+    const lookup = await backendLookupForPage();
+    if (lookup.mode === "use" && lookup.alias) return lookup.alias;
+  } catch {
+    // Fall back to visible sent-to text below.
+  }
+  return visibleMailroomAliasOnPage();
+}
+
+async function fetchOtpOnce(alias) {
+  try {
+    const result = await assistantFetch(`/api/rotator/aliases/otp?alias=${encodeURIComponent(alias)}`);
+    return result.code || "";
+  } catch (error) {
+    if (error?.status === 404) return "";
+    throw error;
+  }
+}
+
+function fillOtpInput(input, code) {
+  const form = input.closest("form");
+  const boxes = form
+    ? Array.from(form.querySelectorAll('input[maxlength="1"], input[aria-label*="code" i]')).filter(inputAvailable)
+    : [];
+  if (boxes.length >= 4 && boxes.length <= 8 && input.maxLength === 1) {
+    [...String(code)].forEach((char, index) => {
+      if (boxes[index]) setValue(boxes[index], char);
+    });
+    removeChip(input);
+    return;
+  }
+  setValue(input, code);
+  removeChip(input);
+}
+
+async function ensureOtpChip(input) {
+  if (assistantChips.has(input) || otpPolls.has(input)) return;
+  const alias = await relevantAliasForOtp();
+  if (!alias || !inputAvailable(input) || fieldHasValue(input)) return;
+  const chip = createChip(input, `Waiting for code from ${alias}`, () => undefined);
+  const action = chip.querySelector("[data-mailroom-action]");
+  const poll = (async () => {
+    const started = Date.now();
+    while (Date.now() - started < 60000 && inputAvailable(input) && !fieldHasValue(input)) {
+      try {
+        const code = await fetchOtpOnce(alias);
+        if (code) {
+          action.textContent = `Fill code (${code}) from ${alias}`;
+          action.onclick = null;
+          action.addEventListener("click", () => fillOtpInput(input, code), { once: true });
+          return;
+        }
+      } catch {
+        action.textContent = "Could not fetch code.";
+        return;
+      }
+      await wait(5000);
+    }
+    if (assistantChips.get(input) === chip) removeChip(input);
+  })();
+  otpPolls.set(input, poll);
+  await poll.finally(() => otpPolls.delete(input));
+}
+
+function scanPassiveFields() {
+  if (!assistantEligibleFrame()) return;
+  emailSuggestionInputs().forEach((input) => ensureEmailChip(input).catch(() => undefined));
+  otpSuggestionInputs().forEach((input) => ensureOtpChip(input).catch(() => undefined));
+}
+
+function startPassiveAssistant() {
+  if (!assistantEligibleFrame()) return;
+  let timer = 0;
+  const schedule = () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(scanPassiveFields, 350);
+  };
+  schedule();
+  new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["type", "name", "autocomplete", "placeholder", "maxlength", "value", "style", "class"] });
+  window.addEventListener("scroll", syncChipPositions, { passive: true });
+  window.addEventListener("resize", syncChipPositions);
+}
+
+startPassiveAssistant();

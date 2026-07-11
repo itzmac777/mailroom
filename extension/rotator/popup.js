@@ -7,9 +7,11 @@ const statusEl = document.querySelector("#status");
 const jobsEl = document.querySelector("#jobs");
 const runnerStatusEl = document.querySelector("#runner-status");
 const stopOnboardingButton = document.querySelector("#stop-onboarding");
+const siteAliasesEl = document.querySelector("#site-aliases");
 
 let accounts = [];
 let jobs = [];
+let siteAliases = [];
 
 function setStatus(message, kind = "") {
   statusEl.textContent = message;
@@ -100,23 +102,54 @@ function renderJobs() {
   }
 }
 
+function renderSiteAliases() {
+  siteAliasesEl.innerHTML = "";
+  if (!siteAliases.length) {
+    siteAliasesEl.innerHTML = '<p class="hint">No site aliases yet.</p>';
+    return;
+  }
+
+  for (const mapping of siteAliases.slice(0, 8)) {
+    const item = document.createElement("article");
+    item.className = "account";
+    item.innerHTML = `
+      <div>
+        <strong></strong>
+        <p></p>
+        <span class="mini"></span>
+      </div>
+      <button class="ghost" type="button">Remove</button>
+    `;
+    item.querySelector("strong").textContent = mapping.domain;
+    item.querySelector("p").textContent = mapping.alias;
+    item.querySelector(".mini").textContent = `Last used: ${formatDate(mapping.lastUsedAt)}`;
+    item.querySelector("button").addEventListener("click", () => removeSiteAlias(mapping));
+    siteAliasesEl.append(item);
+  }
+}
+
 async function loadData() {
   setStatus("Loading accounts...");
   try {
-    const [accountResult, jobResult] = await Promise.all([
+    const [accountResult, jobResult, aliasResult] = await Promise.all([
       mailroomFetch("/api/rotator/accounts"),
-      mailroomFetch("/api/rotator/onboarding/jobs")
+      mailroomFetch("/api/rotator/onboarding/jobs"),
+      mailroomFetch("/api/rotator/aliases")
     ]);
     accounts = accountResult.accounts || [];
     jobs = jobResult.jobs || [];
+    siteAliases = aliasResult.mappings || [];
     renderAccounts();
     renderJobs();
+    renderSiteAliases();
     setStatus("Ready.", "ok");
   } catch (error) {
     accounts = [];
     jobs = [];
+    siteAliases = [];
     renderAccounts();
     renderJobs();
+    renderSiteAliases();
     setStatus(error instanceof Error ? error.message : "Could not load accounts.", "error");
   }
 }
@@ -164,6 +197,17 @@ async function activateAccount(account) {
   } catch (error) {
     snapshot = null;
     setStatus(error instanceof Error ? error.message : "Could not activate account.", "error");
+  }
+}
+
+async function removeSiteAlias(mapping) {
+  setStatus(`Removing ${mapping.domain} mapping...`);
+  try {
+    await mailroomFetch(`/api/rotator/aliases/${encodeURIComponent(mapping.id)}`, { method: "DELETE" });
+    await loadData();
+    setStatus("Site alias mapping removed.", "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Could not remove site alias mapping.", "error");
   }
 }
 

@@ -177,6 +177,19 @@ async function runOnboardingJob(jobId) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "mailroomFetch") {
+    mailroomFetch(message.path, message.options || {})
+      .then((payload) => sendResponse({ ok: true, payload }))
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          message: error instanceof Error ? error.message : "Mailroom request failed.",
+          status: error?.status,
+          payload: error?.payload
+        });
+      });
+    return true;
+  }
   if (message?.type === "getOnboardingState") {
     sendResponse({ state: runnerState });
     return true;
