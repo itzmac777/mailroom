@@ -224,7 +224,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 const MAILROOM_ASSISTANT_CLASS = "mailroom-assist-chip";
 const MAILROOM_DISMISS_CLASS = "mailroom-assist-dismiss";
 const assistantChips = new Map();
+const pageChips = new Map();
 const otpPolls = new WeakMap();
+let verificationLinkPoll = null;
 let aliasLookupPromise = null;
 let publicConfigPromise = null;
 
@@ -275,6 +277,11 @@ function installAssistantStyles() {
       color: #5f6368;
       font-size: 16px;
       line-height: 1;
+    }
+    .${MAILROOM_ASSISTANT_CLASS}[data-floating="true"] {
+      position: fixed;
+      top: 76px;
+      right: 18px;
     }
   `;
   document.documentElement.append(style);
@@ -355,6 +362,31 @@ function createChip(input, label, onClick) {
   document.documentElement.append(chip);
   assistantChips.set(input, chip);
   requestAnimationFrame(() => positionChip(input, chip));
+  return chip;
+}
+
+function removePageChip(key) {
+  const chip = pageChips.get(key);
+  if (chip) chip.remove();
+  pageChips.delete(key);
+}
+
+function createPageChip(key, label, onClick) {
+  removePageChip(key);
+  installAssistantStyles();
+  const chip = document.createElement("span");
+  chip.className = MAILROOM_ASSISTANT_CLASS;
+  chip.dataset.floating = "true";
+  chip.innerHTML = `
+    <button type="button" data-mailroom-action></button>
+    <button type="button" class="${MAILROOM_DISMISS_CLASS}" aria-label="Dismiss Mailroom suggestion" title="Dismiss">x</button>
+  `;
+  const action = chip.querySelector("[data-mailroom-action]");
+  action.textContent = label;
+  action.addEventListener("click", () => onClick(action));
+  chip.querySelector(`.${MAILROOM_DISMISS_CLASS}`).addEventListener("click", () => removePageChip(key));
+  document.documentElement.append(chip);
+  pageChips.set(key, chip);
   return chip;
 }
 
@@ -472,7 +504,7 @@ async function relevantAliasForOtp() {
 
 async function fetchOtpOnce(alias) {
   try {
-    const result = await assistantFetch(`/api/rotator/aliases/otp?alias=${encodeURIComponent(alias)}`);
+    const result = await assistantFetch(`/api/rotator/aliases/action?alias=${encodeURIComponent(alias)}`);
     return result.code || "";
   } catch (error) {
     if (error?.status === 404) return "";
@@ -525,10 +557,72 @@ async function ensureOtpChip(input) {
   await poll.finally(() => otpPolls.delete(input));
 }
 
+function activationLinkPageVisible() {
+  const text = (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 2500);
+  if (!text) return false;
+  const sentSignal = /(sent|send|emailed|delivered)/i.test(text);
+  const mailboxSignal = /(check|open|follow).{0,80}(email|mailbox|inbox|message)/i.test(text) || /(email|mailbox|inbox|message).{0,80}(check|open|follow)/i.test(text);
+  const linkSignal = /(activation link|activate your account|verify your email|verification link|confirm your email|follow the link|complete registration)/i.test(text);
+  return sentSignal && mailboxSignal && linkSignal;
+}
+
+async function fetchVerificationActionOnce(alias) {
+  try {
+    return await assistantFetch(`/api/rotator/aliases/action?alias=${encodeURIComponent(alias)}`);
+  } catch (error) {
+    if (error?.status === 404) return null;
+    throw error;
+  }
+}
+
+async function openVerificationLink(url) {
+  const response = await chrome.runtime.sendMessage({ type: "openVerificationLink", url });
+  if (!response?.ok) throw new Error(response?.message || "Could not open link.");
+}
+
+async function ensureVerificationLinkChip() {
+  if (verificationLinkPoll || pageChips.has("verification-link") || !activationLinkPageVisible()) return;
+  const alias = await relevantAliasForOtp();
+  if (!alias) return;
+  const chip = createPageChip("verification-link", `Waiting for activation link from ${alias}`, () => undefined);
+  const action = chip.querySelector("[data-mailroom-action]");
+  verificationLinkPoll = (async () => {
+    const started = Date.now();
+    while (Date.now() - started < 90000 && activationLinkPageVisible()) {
+      try {
+        const result = await fetchVerificationActionOnce(alias);
+        if (result?.link) {
+          action.textContent = `Open activation link from ${alias}`;
+          action.onclick = null;
+          action.addEventListener("click", async () => {
+            try {
+              action.textContent = "Opening activation link...";
+              await openVerificationLink(result.link);
+              removePageChip("verification-link");
+            } catch (error) {
+              action.textContent = error instanceof Error ? error.message.slice(0, 120) : "Could not open link.";
+            }
+          }, { once: true });
+          return;
+        }
+      } catch {
+        action.textContent = "Could not fetch activation link.";
+        return;
+      }
+      await wait(5000);
+    }
+    if (pageChips.get("verification-link") === chip) removePageChip("verification-link");
+  })();
+  await verificationLinkPoll.finally(() => {
+    verificationLinkPoll = null;
+  });
+}
+
 function scanPassiveFields() {
   if (!assistantEligibleFrame()) return;
   emailSuggestionInputs().forEach((input) => ensureEmailChip(input).catch(() => undefined));
   otpSuggestionInputs().forEach((input) => ensureOtpChip(input).catch(() => undefined));
+  ensureVerificationLinkChip().catch(() => undefined);
 }
 
 function startPassiveAssistant() {

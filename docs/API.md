@@ -161,6 +161,14 @@ Device-token only. Fetches the latest verification code delivered to a local
 Mailroom alias using the existing onboarding IMAP/mailbox OTP reader, without
 the OpenAI-specific keyword filter. Rate-limited and audited per device.
 
+### `GET /api/rotator/aliases/action?alias=:email`
+
+Device-token only. Fetches the latest verification action delivered to a local
+Mailroom alias. Returns a numeric `code`, an activation/verification `link`, or
+both when present. The extension uses this for OTP fields and for pages that
+ask the human to check email and follow an activation link. Links are only
+opened after an explicit click in the extension chip.
+
 ### `POST /api/rotator/onboarding/jobs`
 
 Admin-only. Creates a bulk onboarding job with up to 10 items. Passwords are

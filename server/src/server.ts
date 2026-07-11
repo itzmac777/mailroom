@@ -56,6 +56,7 @@ type VerificationMatch = {
   subject: string;
   from: string;
   code?: string;
+  link?: string;
   serviceHint?: string;
   date: string;
   confidence: number;
@@ -1978,6 +1979,50 @@ function serviceHintFrom(from: string, subject: string): string | undefined {
   return String(subject || "").split(/\s+/).slice(0, 3).join(" ") || undefined;
 }
 
+function decodeHtmlEntities(value: string): string {
+  return String(value || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function normalizeVerificationLink(value: string): string {
+  const decoded = decodeHtmlEntities(value).trim().replace(/[)\].,;]+$/g, "");
+  try {
+    const url = new URL(decoded);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function extractVerificationLink(input: { subject: string; body?: string; html?: string }): string | undefined {
+  const html = String(input.html || "");
+  const text = `${input.subject}\n${input.body || ""}\n${stripHtml(html)}`.replace(/\s+/g, " ").trim();
+  const candidates: string[] = [];
+  for (const match of html.matchAll(/\bhref\s*=\s*["']([^"']+)["']/gi)) {
+    const url = normalizeVerificationLink(match[1]);
+    if (url) candidates.push(url);
+  }
+  for (const match of text.matchAll(/\bhttps?:\/\/[^\s<>"']+/gi)) {
+    const url = normalizeVerificationLink(match[0]);
+    if (url) candidates.push(url);
+  }
+  const unique = Array.from(new Set(candidates));
+  if (!unique.length) return undefined;
+
+  const activationSignal = /(activate|activation|verify|verification|confirm|complete|registration|register|sign.?up|account|login|magic.?link)/i;
+  const negativeSignal = /(unsubscribe|privacy|terms|policy|support|help|contact|preferences|view.?in.?browser)/i;
+  const subjectOrBodyLooksRelevant = activationSignal.test(`${input.subject}\n${text.slice(0, 800)}`);
+  const preferred = unique.find((url) => activationSignal.test(url) && !negativeSignal.test(url));
+  if (preferred) return preferred;
+  if (!subjectOrBodyLooksRelevant) return undefined;
+  return unique.find((url) => !negativeSignal.test(url));
+}
+
 function extractVerification(input: { uid: string; subject: string; from: string; date: string; body?: string; html?: string }): VerificationMatch | undefined {
   const text = `${input.subject}\n${input.body || ""}\n${stripHtml(input.html || "")}`.replace(/\s+/g, " ").trim();
   if (!text) return undefined;
@@ -1986,14 +2031,17 @@ function extractVerification(input: { uid: string; subject: string; from: string
     /\b([0-9]{6})\b/
   ];
   const code = codePatterns.map((pattern) => text.match(pattern)?.[1]).find(Boolean);
-  const subjectLooksRelevant = /(code|otp|verification|verify|login|security|sign in|signin)/i.test(input.subject || text);
-  if (!code) return undefined;
+  const link = extractVerificationLink(input);
+  const subjectLooksRelevant = /(code|otp|verification|verify|activation|activate|confirm|registration|login|security|sign in|signin|sign up|signup)/i.test(input.subject || text);
+  if (!code && !link) return undefined;
   if (code && !subjectLooksRelevant && !/(code|otp|verification|login)/i.test(text.slice(0, 500))) return undefined;
+  if (link && !subjectLooksRelevant && !/(activate|activation|verify|verification|confirm|complete|registration|account)/i.test(text.slice(0, 800))) return undefined;
   return {
     uid: input.uid,
     subject: input.subject || "(No subject)",
     from: input.from || "Unknown Sender",
     code,
+    link,
     serviceHint: serviceHintFrom(input.from, input.subject),
     date: input.date,
     confidence: subjectLooksRelevant ? 0.94 : 0.82
@@ -2890,6 +2938,36 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
       await audit(db, device.id, "rotator_site_alias_otp_fetch_failed", { alias, message: error instanceof Error ? error.message : String(error) });
       await writeDb(db);
       return json(res, 502, { error: error instanceof Error ? error.message : "OTP fetch failed." });
+    }
+  }
+
+  if (url.pathname === "/api/rotator/aliases/action") {
+    if (!device) return json(res, 401, { error: "Device token required." });
+    if (req.method !== "GET") return json(res, 404, { error: "Not found." });
+    if (!rateLimitKey(`rotator-alias-action:${device.id}`, 60, 15 * 60 * 1000)) {
+      await writeDb(db);
+      return json(res, 429, { error: "Too many verification fetches. Try again later." });
+    }
+    const alias = validateEmail(url.searchParams.get("alias"));
+    if (!alias) return json(res, 400, { error: "A valid alias query parameter is required." });
+    if (!isZenvyOnboardingEmail(alias)) return json(res, 400, { error: `Alias must belong to ${MAIL_DOMAIN} or zenvy.com.bd.` });
+    try {
+      const match = siteAliasOwnerMailboxForAlias(db, alias)
+        ? await fetchSiteAliasOtp(db, alias)
+        : await fetchZenvyOnboardingOtp(db, alias, "");
+      auditRotatorDeviceEvent(db, device.id, "site_alias_otp_fetch");
+      await audit(db, device.id, "rotator_site_alias_action_fetch", { alias, foundCode: Boolean(match?.code), foundLink: Boolean(match?.link) });
+      await writeDb(db);
+      if (!match?.code && !match?.link) return json(res, 404, { error: "No verification action found yet." });
+      return json(res, 200, {
+        code: match.code,
+        link: match.link,
+        match: { subject: match.subject, from: match.from, date: match.date, confidence: match.confidence }
+      });
+    } catch (error) {
+      await audit(db, device.id, "rotator_site_alias_action_fetch_failed", { alias, message: error instanceof Error ? error.message : String(error) });
+      await writeDb(db);
+      return json(res, 502, { error: error instanceof Error ? error.message : "Verification fetch failed." });
     }
   }
 

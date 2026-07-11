@@ -45,6 +45,7 @@ assert.match(background, /reachedOtpPage/);
 assert.match(background, /needs manual finish/);
 assert.match(background, /errorDetail/);
 assert.match(background, /mailroomFetch/);
+assert.match(background, /openVerificationLink/);
 
 const contentScript = await readFile(path.join(root, "content-script.js"), "utf8");
 assert.match(contentScript, /rotatorSubmitEmail/);
@@ -55,11 +56,13 @@ assert.match(contentScript, /safe_submit_not_found/);
 assert.match(contentScript, /inboxVerificationPage/);
 assert.match(contentScript, /check your inbox/);
 assert.match(contentScript, /aliases\/lookup/);
-assert.match(contentScript, /aliases\/otp/);
+assert.match(contentScript, /aliases\/action/);
 assert.match(contentScript, /assistantFetch/);
 assert.match(contentScript, /likelyEmailInput/);
 assert.match(contentScript, /placeholder/);
 assert.match(contentScript, /Waiting for code/);
+assert.match(contentScript, /activation link/);
+assert.match(contentScript, /openVerificationLink/);
 assert.match(contentScript, /window\.top === window\.self/);
 
 console.log("Extension manifest and rotator flows look valid.");

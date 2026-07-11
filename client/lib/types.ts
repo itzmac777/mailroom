@@ -39,6 +39,7 @@ export type VerificationMatch = {
   subject: string;
   from: string;
   code?: string;
+  link?: string;
   serviceHint?: string;
   date: string;
   confidence: number;

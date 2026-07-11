@@ -177,6 +177,18 @@ async function runOnboardingJob(jobId) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "openVerificationLink") {
+    try {
+      const url = new URL(String(message.url || ""));
+      if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Unsupported link.");
+      chrome.tabs.create({ url: url.toString(), active: true })
+        .then((tab) => sendResponse({ ok: true, tabId: tab.id }))
+        .catch((error) => sendResponse({ ok: false, message: error instanceof Error ? error.message : "Could not open link." }));
+    } catch (error) {
+      sendResponse({ ok: false, message: error instanceof Error ? error.message : "Invalid link." });
+    }
+    return true;
+  }
   if (message?.type === "mailroomFetch") {
     mailroomFetch(message.path, message.options || {})
       .then((payload) => sendResponse({ ok: true, payload }))
