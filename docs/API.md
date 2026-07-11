@@ -138,10 +138,12 @@ derives the local part, reuses the existing Mailroom alias provider path, stores
 the mapping, and returns `{ alias, mapping, domain }`. Alias local-part
 collisions are handled by suffixing (`amazon2`, `amazon3`, ...).
 
-Site aliases are attached to `ROTATOR_ALIAS_OWNER_EMAIL` when configured;
-otherwise the oldest usable permanent mailbox owns them. Removing a mapping
-does not delete the underlying alias. Multiple aliases per domain are a known
-v1 limitation.
+Site aliases are attached to `ROTATOR_ALIAS_OWNER_EMAIL`. In production
+(`MAILU_DRY_RUN=false`) this variable is required so Mailroom does not guess
+from stale local metadata. If the configured owner mailbox is missing from
+Mailu, Mailroom creates it once with a generated password stored encrypted in
+the rotator mailbox credential store. Removing a mapping does not delete the
+underlying alias. Multiple aliases per domain are a known v1 limitation.
 
 ### `GET /api/rotator/aliases`
 

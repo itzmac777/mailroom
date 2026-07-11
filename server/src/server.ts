@@ -256,6 +256,7 @@ type DomainAliasMapping = {
   id: string;
   domain: string;
   alias: string;
+  ownerEmail?: string;
   createdAt: string;
   lastUsedAt: string;
 };
@@ -1558,6 +1559,14 @@ function findDomainAliasMapping(db: Db, domain: string): DomainAliasMapping | un
   return Object.values(db.domainAliasMappings).find((mapping) => mapping.domain.toLowerCase() === domain.toLowerCase());
 }
 
+function normalizedConfiguredSiteAliasOwnerEmail(): string | undefined {
+  if (!ROTATOR_ALIAS_OWNER_EMAIL) return undefined;
+  const configuredEmail = validateEmail(ROTATOR_ALIAS_OWNER_EMAIL);
+  if (configuredEmail) return configuredEmail;
+  const configuredLocal = normalizeLocal(ROTATOR_ALIAS_OWNER_EMAIL);
+  return validateLocal(configuredLocal) ? undefined : `${configuredLocal}@${MAIL_DOMAIN}`;
+}
+
 function canonicalMailboxEmail(mailbox: Mailbox): string | undefined {
   const direct = validateEmail(mailbox.email);
   if (direct) return direct;
@@ -1568,10 +1577,8 @@ function canonicalMailboxEmail(mailbox: Mailbox): string | undefined {
 }
 
 function findConfiguredSiteAliasOwner(db: Db): Mailbox | undefined {
-  if (!ROTATOR_ALIAS_OWNER_EMAIL) return undefined;
-  const configuredEmail = validateEmail(ROTATOR_ALIAS_OWNER_EMAIL);
-  const configuredLocal = normalizeLocal(ROTATOR_ALIAS_OWNER_EMAIL);
-  const normalizedEmail = configuredEmail || (validateLocal(configuredLocal) ? "" : `${configuredLocal}@${MAIL_DOMAIN}`);
+  const normalizedEmail = normalizedConfiguredSiteAliasOwnerEmail();
+  if (!normalizedEmail) return undefined;
   if (normalizedEmail && db.mailboxes[normalizedEmail]) return db.mailboxes[normalizedEmail];
   return Object.values(db.mailboxes).find((mailbox) => {
     const mailboxEmail = canonicalMailboxEmail(mailbox);
@@ -1579,9 +1586,42 @@ function findConfiguredSiteAliasOwner(db: Db): Mailbox | undefined {
   });
 }
 
+function syntheticConfiguredSiteAliasOwner(db: Db): Mailbox | undefined {
+  const normalizedEmail = normalizedConfiguredSiteAliasOwnerEmail();
+  if (!normalizedEmail) return undefined;
+  const local = normalizedEmail.split("@")[0];
+  const mailbox: Mailbox = {
+    id: randomToken(12),
+    local,
+    domain: MAIL_DOMAIN,
+    email: normalizedEmail,
+    displayName: local,
+    kind: "permanent",
+    status: MAILU_DRY_RUN ? "dry-run" : "active",
+    quotaMb: DEFAULT_QUOTA_MB,
+    outboundDailyLimit: DEFAULT_OUTBOUND_DAILY_LIMIT,
+    passwordHash: "",
+    createdAt: nowIso(),
+    webmailUrl: WEBMAIL_URL,
+    aliases: [],
+    aliasLimit: DEFAULT_ALIAS_LIMIT,
+    forwardingEnabled: false,
+    forwardTo: [],
+    providerResult: {
+      provider: MAILU_DRY_RUN ? "dry-run" : "mailu",
+      message: "Created as site-alias owner metadata."
+    }
+  };
+  db.mailboxes[normalizedEmail] = mailbox;
+  return mailbox;
+}
+
 function siteAliasOwnerMailbox(db: Db): Mailbox | undefined {
   const configured = findConfiguredSiteAliasOwner(db);
   if (configured && configured.kind !== "temporary" && mailboxIsUsable(configured) && canonicalMailboxEmail(configured)) return configured;
+  const synthetic = syntheticConfiguredSiteAliasOwner(db);
+  if (synthetic) return synthetic;
+  if (!MAILU_DRY_RUN) return undefined;
   return Object.values(db.mailboxes)
     .filter((mailbox) => mailbox.kind !== "temporary" && mailboxIsUsable(mailbox) && canonicalMailboxEmail(mailbox))
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))[0];
@@ -1598,13 +1638,70 @@ function nextAvailableSiteAliasLocal(db: Db, domain: string): string {
   throw new Error("Could not find an available alias local part for this site.");
 }
 
+async function ensureSiteAliasOwnerProviderMailbox(db: Db, mailbox: Mailbox, ownerEmail: string): Promise<void> {
+  if (MAILU_DRY_RUN) return;
+  const local = ownerEmail.split("@")[0];
+  const password = generatedRotatorMailboxPassword();
+  try {
+    const result = await createMailuUser(
+      local,
+      password,
+      mailbox.displayName || local,
+      mailbox.quotaMb || DEFAULT_QUOTA_MB,
+      "Created by Mailroom site alias owner"
+    );
+    storeRotatorMailboxPassword(db, ownerEmail, password);
+    mailbox.passwordHash = hashPassword(password);
+    mailbox.status = "active";
+    mailbox.providerResult = result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/\b(409|already exists|already been|duplicate|exists)\b/i.test(message)) throw error;
+  }
+}
+
+function siteAliasOwnerMailboxForAlias(db: Db, aliasEmail: string): Mailbox | undefined {
+  const normalizedAlias = aliasEmail.toLowerCase();
+  const mapping = Object.values(db.domainAliasMappings).find((item) => item.alias.toLowerCase() === normalizedAlias);
+  if (mapping?.ownerEmail) {
+    const owner = db.mailboxes[mapping.ownerEmail.toLowerCase()];
+    if (owner && canonicalMailboxEmail(owner)) return owner;
+  }
+  return Object.values(db.mailboxes).find((mailbox) => {
+    const aliases = mailbox.aliases || [];
+    return aliases.some((alias) => alias.email.toLowerCase() === normalizedAlias);
+  });
+}
+
+async function fetchSiteAliasOtp(db: Db, aliasEmail: string): Promise<VerificationMatch | undefined> {
+  const owner = siteAliasOwnerMailboxForAlias(db, aliasEmail);
+  const ownerEmail = owner ? canonicalMailboxEmail(owner) : undefined;
+  if (!ownerEmail) return undefined;
+
+  const storedPassword = getRotatorMailboxPassword(db, ownerEmail);
+  if (storedPassword) {
+    try {
+      return await fetchVerificationViaImap(ownerEmail, storedPassword, aliasEmail, "");
+    } catch {
+      delete db.rotatorMailboxCredentials[rotatorMailboxCredentialKey(ownerEmail)];
+    }
+  }
+
+  if (ROTATOR_ZENVY_IMAP_MASTER_USER && ROTATOR_ZENVY_IMAP_MASTER_PASSWORD && ROTATOR_ZENVY_IMAP_MASTER_PASSWORD !== "your-master-imap-password") {
+    return fetchVerificationViaImap(zenvyImapAuthUser(ownerEmail), ROTATOR_ZENVY_IMAP_MASTER_PASSWORD, aliasEmail, "");
+  }
+
+  throw new Error("Site alias OTP fetch needs Dovecot master-user IMAP credentials or a stored owner mailbox password.");
+}
+
 async function createDomainAliasMapping(db: Db, domain: string, device: RotatorDevice): Promise<DomainAliasMapping> {
   const existing = findDomainAliasMapping(db, domain);
   if (existing) return existing;
   const mailbox = siteAliasOwnerMailbox(db);
-  if (!mailbox) throw new Error("Configure ROTATOR_ALIAS_OWNER_EMAIL or create a permanent mailbox before creating site aliases.");
+  if (!mailbox) throw new Error("Set ROTATOR_ALIAS_OWNER_EMAIL to the Mailu mailbox that should receive site alias mail.");
   const ownerEmail = canonicalMailboxEmail(mailbox);
   if (!ownerEmail) throw new Error("Site alias owner mailbox must have a valid destination email address.");
+  await ensureSiteAliasOwnerProviderMailbox(db, mailbox, ownerEmail);
   const local = nextAvailableSiteAliasLocal(db, domain);
   const alias: MailAlias = {
     id: randomToken(10),
@@ -1622,6 +1719,7 @@ async function createDomainAliasMapping(db: Db, domain: string, device: RotatorD
     id: randomToken(10),
     domain,
     alias: alias.email,
+    ownerEmail,
     createdAt: nowIso(),
     lastUsedAt: nowIso()
   };
@@ -2777,7 +2875,9 @@ async function handleRotatorApi(req: IncomingMessage, res: ServerResponse, url: 
     if (!alias) return json(res, 400, { error: "A valid alias query parameter is required." });
     if (!isZenvyOnboardingEmail(alias)) return json(res, 400, { error: `Alias must belong to ${MAIL_DOMAIN} or zenvy.com.bd.` });
     try {
-      const match = await fetchZenvyOnboardingOtp(db, alias, "");
+      const match = siteAliasOwnerMailboxForAlias(db, alias)
+        ? await fetchSiteAliasOtp(db, alias)
+        : await fetchZenvyOnboardingOtp(db, alias, "");
       auditRotatorDeviceEvent(db, device.id, "site_alias_otp_fetch");
       await audit(db, device.id, "rotator_site_alias_otp_fetch", { alias, found: Boolean(match?.code) });
       await writeDb(db);
