@@ -243,7 +243,16 @@ function installAssistantStyles() {
   if (document.getElementById("mailroom-assist-styles")) return;
   const style = document.createElement("style");
   style.id = "mailroom-assist-styles";
+  const dmSansBoldUrl = chrome.runtime.getURL("fonts/dm-sans-latin-700-normal.woff2");
   style.textContent = `
+    @font-face {
+      font-family: "Mailroom DM Sans";
+      font-style: normal;
+      font-weight: 700;
+      font-display: swap;
+      src: url("${dmSansBoldUrl}") format("woff2");
+    }
+
     .${MAILROOM_ASSISTANT_CLASS} {
       position: absolute;
       z-index: 2147483647;
@@ -257,7 +266,7 @@ function installAssistantStyles() {
       color: #111111;
       box-shadow: 0 6px 22px rgba(15, 23, 42, 0.16);
       padding: 4px 6px 4px 10px;
-      font: 700 12px/1.25 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 700 12px/1.25 "Mailroom DM Sans", "DM Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     .${MAILROOM_ASSISTANT_CLASS} button {
       all: unset;

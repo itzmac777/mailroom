@@ -24,8 +24,16 @@ export function Header({ isLoggedIn }: HeaderProps) {
 
       <div className="mx-auto flex min-h-[72px] max-md:min-h-[56px] max-w-[1320px] items-center justify-between gap-8 px-8 py-2 max-md:px-4">
         {/* Logo */}
-        <Link href="/" className="text-[36px] max-md:text-[24px] font-semibold leading-none tracking-[-0.03em] text-ink" aria-label="Mail Portal home">
-          Mailroom
+        <Link href="/" className="flex items-center gap-3 text-[34px] font-semibold leading-none text-ink max-md:gap-2 max-md:text-[23px]" aria-label="Mailroom home">
+          <img
+            src="/brand/mailroom-mark.png"
+            alt=""
+            width={44}
+            height={44}
+            className="h-11 w-11 object-contain max-md:h-8 max-md:w-8"
+            aria-hidden="true"
+          />
+          <span>Mailroom</span>
         </Link>
 
         {/* Desktop Navigation */}
@@ -79,7 +87,10 @@ export function Header({ isLoggedIn }: HeaderProps) {
           <aside className="fixed inset-y-0 right-0 z-50 w-[280px] border-l border-line bg-white p-6 shadow-xl flex flex-col justify-between animate-in slide-in-from-right duration-200">
             <div>
               <div className="flex items-center justify-between border-b border-line pb-4 mb-6">
-                <span className="text-xl font-bold tracking-tight text-ink">Navigation</span>
+                <span className="flex items-center gap-2 text-xl font-bold tracking-tight text-ink">
+                  <img src="/brand/mailroom-mark.png" alt="" width={28} height={28} className="h-7 w-7 object-contain" aria-hidden="true" />
+                  Mailroom
+                </span>
                 <button
                   type="button"
                   onClick={() => setIsOpen(false)}

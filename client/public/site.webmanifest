@@ -1,0 +1,20 @@
+{
+  "name": "Mailroom",
+  "short_name": "Mailroom",
+  "description": "Invite-only mailbox creation for your own domain.",
+  "icons": [
+    {
+      "src": "/favicons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "theme_color": "#3850dc",
+  "background_color": "#ffffff",
+  "display": "standalone"
+}

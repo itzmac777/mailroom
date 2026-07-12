@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
+const styles = await readFile(path.join(root, "styles.css"), "utf8");
 
 assert.equal(manifest.manifest_version, 3);
 assert.equal(manifest.action.default_popup, "popup.html");
@@ -18,6 +19,15 @@ assert.ok(manifest.host_permissions.includes("https://*.openai.com/*"));
 assert.ok(manifest.optional_host_permissions.includes("https://*/*"));
 assert.ok(manifest.content_scripts.some((script) => script.matches.includes("https://*/*")));
 assert.ok(manifest.content_scripts.some((script) => script.js.includes("shared.js") && script.js.includes("content-script.js")));
+assert.ok(manifest.web_accessible_resources.some((resource) => resource.resources.includes("fonts/dm-sans-latin-700-normal.woff2")));
+assert.match(styles, /font-family: "DM Sans"/);
+assert.match(styles, /fonts\/dm-sans-latin-400-normal\.woff2/);
+assert.match(styles, /html,\s*body,\s*button,\s*input,\s*select/);
+await Promise.all(
+  [400, 500, 600, 700, 800].map((weight) =>
+    access(path.join(root, "fonts", `dm-sans-latin-${weight}-normal.woff2`))
+  )
+);
 
 const shared = await readFile(path.join(root, "shared.js"), "utf8");
 assert.match(shared, /chrome\.storage\.local/);
@@ -64,5 +74,7 @@ assert.match(contentScript, /Waiting for code/);
 assert.match(contentScript, /activation link/);
 assert.match(contentScript, /openVerificationLink/);
 assert.match(contentScript, /window\.top === window\.self/);
+assert.match(contentScript, /Mailroom DM Sans/);
+assert.match(contentScript, /chrome\.runtime\.getURL\("fonts\/dm-sans-latin-700-normal\.woff2"\)/);
 
 console.log("Extension manifest and rotator flows look valid.");
