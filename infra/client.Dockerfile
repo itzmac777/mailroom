@@ -25,6 +25,7 @@ COPY --from=builder /app/client/package.json ./client/package.json
 COPY --from=builder /app/client/node_modules ./client/node_modules
 COPY --from=builder /app/client/next.config.ts ./client/next.config.ts
 COPY --from=builder /app/client/.next ./client/.next
+COPY --from=builder /app/client/public ./client/public
 EXPOSE 3000
 CMD ["npm", "--workspace", "client", "run", "start"]
 
