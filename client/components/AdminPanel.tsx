@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
-import type { AdminSummary } from "@/lib/types";
+import type { AdminSummary, PublicMailbox } from "@/lib/types";
 
 export function AdminPanel() {
   const [token, setToken] = useState("");
@@ -36,6 +36,26 @@ export function AdminPanel() {
       await refresh(token);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not create invite.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateAliasLimit(mailbox: PublicMailbox, form: HTMLFormElement) {
+    const body = new FormData(form);
+    const aliasLimit = Number(body.get("aliasLimit"));
+    setBusy(true);
+    setMessage(`Updating alias limit for ${mailbox.email}...`);
+    try {
+      await api<{ mailbox: PublicMailbox }>(`/api/admin/mailboxes/${encodeURIComponent(mailbox.email)}/alias-limit`, {
+        method: "PATCH",
+        headers: { "x-admin-token": token },
+        body: JSON.stringify({ aliasLimit })
+      });
+      await refresh(token);
+      setMessage(`Alias limit updated for ${mailbox.email}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not update alias limit.");
     } finally {
       setBusy(false);
     }
@@ -76,6 +96,44 @@ export function AdminPanel() {
                   <strong>{invite.code}</strong><span>{invite.uses}/{invite.maxUses} used</span><span className="break-words text-muted">{invite.note}</span>
                 </div>
               )) : <p className="text-muted">No invites yet.</p>}
+            </div>
+            <div className="mt-8">
+              <div className="mb-3 flex items-end justify-between gap-4 max-md:grid">
+                <div>
+                  <p className="eyebrow m-0">Alias limits</p>
+                  <h3 className="text-xl font-extrabold">Mailbox capacity</h3>
+                </div>
+                <span className="text-xs font-bold text-muted">{summary.mailboxes.length} mailbox{summary.mailboxes.length === 1 ? "" : "es"}</span>
+              </div>
+              <div className="grid border-t border-line">
+                {summary.mailboxes.length ? summary.mailboxes.map((mailbox) => {
+                  const activeAliases = (mailbox.aliases || []).filter((alias) => alias.status === "active").length;
+                  const aliasLimit = mailbox.aliasLimit ?? 5;
+                  return (
+                    <form
+                      key={mailbox.email}
+                      className="grid grid-cols-[minmax(160px,1fr)_auto_minmax(110px,0.36fr)_auto] items-center gap-3 border-b border-line py-3 text-sm max-lg:grid-cols-1"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        updateAliasLimit(mailbox, event.currentTarget).catch(() => undefined);
+                      }}
+                    >
+                      <div>
+                        <strong className="break-all">{mailbox.email}</strong>
+                        <p className="mt-1 text-xs text-muted">{mailbox.kind || "permanent"} · {mailbox.status}</p>
+                      </div>
+                      <span className="text-xs font-bold text-muted">{activeAliases}/{aliasLimit} active aliases</span>
+                      <label className="label text-xs">
+                        Alias limit
+                        <input className="field min-h-10" name="aliasLimit" type="number" min="1" max="500" defaultValue={aliasLimit} />
+                      </label>
+                      <button className="button button-secondary min-h-[38px] px-4" type="submit" disabled={busy || !token}>
+                        Save
+                      </button>
+                    </form>
+                  );
+                }) : <p className="py-6 text-muted">No mailboxes yet.</p>}
+              </div>
             </div>
           </div>
         ) : <p className="text-muted">{message}</p>}

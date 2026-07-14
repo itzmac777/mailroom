@@ -91,6 +91,20 @@ test("rotator device, account, session, audit, and revocation flow", async () =>
     };
     await writeFile(dbPath, JSON.stringify(seededDb, null, 2));
 
+    const updatedAliasLimit = await request(baseUrl, "/api/admin/mailboxes/owner%40example.com/alias-limit", {
+      method: "PATCH",
+      headers: { "x-admin-token": adminToken },
+      body: JSON.stringify({ aliasLimit: 12 })
+    });
+    assert.equal(updatedAliasLimit.response.status, 200);
+    assert.equal(updatedAliasLimit.payload.mailbox.aliasLimit, 12);
+
+    const adminSummary = await request(baseUrl, "/api/admin/summary", {
+      headers: { "x-admin-token": adminToken }
+    });
+    assert.equal(adminSummary.response.status, 200);
+    assert.equal(adminSummary.payload.mailboxes.find((mailbox: any) => mailbox.email === "owner@example.com").aliasLimit, 12);
+
     const missingAlias = await request(baseUrl, "/api/rotator/aliases/lookup?hostname=www.amazon.co.uk", {
       headers: deviceHeaders
     });

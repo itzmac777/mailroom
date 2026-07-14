@@ -1453,7 +1453,7 @@ async function readDb(): Promise<Db> {
     mailbox.quotaMb ||= mailbox.kind === "temporary" ? TEMP_QUOTA_MB : DEFAULT_QUOTA_MB;
     mailbox.outboundDailyLimit ??= mailbox.kind === "temporary" ? TEMP_OUTBOUND_DAILY_LIMIT : DEFAULT_OUTBOUND_DAILY_LIMIT;
     mailbox.webmailUrl ||= WEBMAIL_URL;
-    mailbox.aliasLimit ||= DEFAULT_ALIAS_LIMIT;
+    mailbox.aliasLimit ??= DEFAULT_ALIAS_LIMIT;
     mailbox.aliases ||= [];
     mailbox.forwardingEnabled ||= false;
     mailbox.forwardTo ||= [];
@@ -1575,6 +1575,12 @@ function canonicalMailboxEmail(mailbox: Mailbox): string | undefined {
   if (validateLocal(local)) return undefined;
   const domain = String(mailbox.domain || MAIL_DOMAIN).trim().toLowerCase() || MAIL_DOMAIN;
   return validateEmail(`${local}@${domain}`) || undefined;
+}
+
+function findMailboxByEmail(db: Db, email: unknown): Mailbox | undefined {
+  const normalizedEmail = validateEmail(email);
+  if (!normalizedEmail) return undefined;
+  return db.mailboxes[normalizedEmail] || Object.values(db.mailboxes).find((mailbox) => canonicalMailboxEmail(mailbox) === normalizedEmail);
 }
 
 function findConfiguredSiteAliasOwner(db: Db): Mailbox | undefined {
@@ -1776,6 +1782,11 @@ function validateForwardingEmail(mailbox: Mailbox, value: unknown): { email: str
 function validateEmail(value: unknown): string {
   const email = String(value || "").trim().toLowerCase();
   return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) ? email : "";
+}
+
+function normalizeAliasLimit(value: unknown): number | null {
+  const limit = Math.floor(Number(value));
+  return Number.isFinite(limit) && limit >= 1 && limit <= 500 ? limit : null;
 }
 
 function publicTempInboxAccount(account: TempInboxAccount, dashboardSession?: AuthSession | null): PublicTempInboxAccount {
@@ -4215,6 +4226,26 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       await audit(db, "admin", "invite_created", { code, maxUses });
       await writeDb(db);
       return json(res, 201, { invite: db.invites[code] });
+    }
+
+    const adminMailboxAliasLimitRoute = url.pathname.match(/^\/api\/admin\/mailboxes\/([^/]+)\/alias-limit$/);
+    if (adminMailboxAliasLimitRoute) {
+      if (req.method !== "PATCH") return json(res, 404, { error: "Not found." });
+      const email = decodeURIComponent(adminMailboxAliasLimitRoute[1]);
+      const mailbox = findMailboxByEmail(db, email);
+      if (!mailbox) return json(res, 404, { error: "Mailbox not found." });
+      const body = await parseBody(req);
+      const aliasLimit = normalizeAliasLimit(body.aliasLimit);
+      if (aliasLimit === null) return json(res, 400, { error: "Alias limit must be between 1 and 500." });
+      const previousAliasLimit = mailbox.aliasLimit ?? DEFAULT_ALIAS_LIMIT;
+      mailbox.aliasLimit = aliasLimit;
+      await audit(db, "admin", "mailbox_alias_limit_updated", {
+        mailbox: canonicalMailboxEmail(mailbox) || mailbox.email,
+        previousAliasLimit,
+        aliasLimit
+      });
+      await writeDb(db);
+      return json(res, 200, { mailbox: publicMailbox(mailbox) });
     }
 
     if (req.method === "GET" && url.pathname === "/api/admin/summary") {
