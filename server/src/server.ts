@@ -81,6 +81,7 @@ type Mailbox = {
   webmailUrl: string;
   aliases?: MailAlias[];
   aliasLimit?: number;
+  forwardingRecipientLimit?: number;
   forwardingEnabled?: boolean;
   forwardTo?: ForwardingRecipient[];
   forwardingProviderResult?: MailuCreateResult;
@@ -1454,6 +1455,7 @@ async function readDb(): Promise<Db> {
     mailbox.outboundDailyLimit ??= mailbox.kind === "temporary" ? TEMP_OUTBOUND_DAILY_LIMIT : DEFAULT_OUTBOUND_DAILY_LIMIT;
     mailbox.webmailUrl ||= WEBMAIL_URL;
     mailbox.aliasLimit ??= DEFAULT_ALIAS_LIMIT;
+    mailbox.forwardingRecipientLimit ??= FORWARDING_RECIPIENT_LIMIT;
     mailbox.aliases ||= [];
     mailbox.forwardingEnabled ||= false;
     mailbox.forwardTo ||= [];
@@ -1612,6 +1614,7 @@ function syntheticConfiguredSiteAliasOwner(db: Db): Mailbox | undefined {
     webmailUrl: WEBMAIL_URL,
     aliases: [],
     aliasLimit: DEFAULT_ALIAS_LIMIT,
+    forwardingRecipientLimit: FORWARDING_RECIPIENT_LIMIT,
     forwardingEnabled: false,
     forwardTo: [],
     providerResult: {
@@ -1763,7 +1766,7 @@ function primaryForwardingDestinations(mailbox: Mailbox): string[] {
 }
 
 function forwardingRecipientLimitReached(mailbox: Mailbox): boolean {
-  return (mailbox.forwardTo || []).filter((recipient) => !recipient.disabledAt).length >= FORWARDING_RECIPIENT_LIMIT;
+  return (mailbox.forwardTo || []).filter((recipient) => !recipient.disabledAt).length >= (mailbox.forwardingRecipientLimit ?? FORWARDING_RECIPIENT_LIMIT);
 }
 
 function getForwardingRecipient(mailbox: Mailbox, id: string): ForwardingRecipient | undefined {
@@ -1787,6 +1790,11 @@ function validateEmail(value: unknown): string {
 function normalizeAliasLimit(value: unknown): number | null {
   const limit = Math.floor(Number(value));
   return Number.isFinite(limit) && limit >= 1 && limit <= 500 ? limit : null;
+}
+
+function normalizeForwardingRecipientLimit(value: unknown): number | null {
+  const limit = Math.floor(Number(value));
+  return Number.isFinite(limit) && limit >= 1 && limit <= 50 ? limit : null;
 }
 
 function publicTempInboxAccount(account: TempInboxAccount, dashboardSession?: AuthSession | null): PublicTempInboxAccount {
@@ -3517,6 +3525,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       createdAt: nowIso(),
       inviteCode: code,
       webmailUrl: WEBMAIL_URL,
+      aliases: [],
+      aliasLimit: DEFAULT_ALIAS_LIMIT,
+      forwardingRecipientLimit: FORWARDING_RECIPIENT_LIMIT,
+      forwardingEnabled: false,
+      forwardTo: [],
       providerResult
     };
 
@@ -3571,7 +3584,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return json(res, 200, {
       enabled: Boolean(session.mailbox.forwardingEnabled),
       recipients: (session.mailbox.forwardTo || []).map(publicForwardingRecipient),
-      limit: FORWARDING_RECIPIENT_LIMIT,
+      limit: session.mailbox.forwardingRecipientLimit ?? FORWARDING_RECIPIENT_LIMIT,
       verifyTtlMinutes: FORWARDING_VERIFY_TTL_MINUTES,
       providerResult: session.mailbox.forwardingProviderResult || null
     });
@@ -4153,6 +4166,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       createdAt: nowIso(),
       expiresAt,
       webmailUrl: WEBMAIL_URL,
+      aliases: [],
+      aliasLimit: DEFAULT_ALIAS_LIMIT,
+      forwardingRecipientLimit: FORWARDING_RECIPIENT_LIMIT,
+      forwardingEnabled: false,
+      forwardTo: [],
       providerResult
     };
     db.mailboxes[email] = mailbox;
@@ -4243,6 +4261,32 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         mailbox: canonicalMailboxEmail(mailbox) || mailbox.email,
         previousAliasLimit,
         aliasLimit
+      });
+      await writeDb(db);
+      return json(res, 200, { mailbox: publicMailbox(mailbox) });
+    }
+
+    const adminMailboxRoutingLimitsRoute = url.pathname.match(/^\/api\/admin\/mailboxes\/([^/]+)\/routing-limits$/);
+    if (adminMailboxRoutingLimitsRoute) {
+      if (req.method !== "PATCH") return json(res, 404, { error: "Not found." });
+      const email = decodeURIComponent(adminMailboxRoutingLimitsRoute[1]);
+      const mailbox = findMailboxByEmail(db, email);
+      if (!mailbox) return json(res, 404, { error: "Mailbox not found." });
+      const body = await parseBody(req);
+      const aliasLimit = normalizeAliasLimit(body.aliasLimit);
+      const forwardingRecipientLimit = normalizeForwardingRecipientLimit(body.forwardingRecipientLimit);
+      if (aliasLimit === null) return json(res, 400, { error: "Alias limit must be between 1 and 500." });
+      if (forwardingRecipientLimit === null) return json(res, 400, { error: "Forwarding recipient limit must be between 1 and 50." });
+      const previousAliasLimit = mailbox.aliasLimit ?? DEFAULT_ALIAS_LIMIT;
+      const previousForwardingRecipientLimit = mailbox.forwardingRecipientLimit ?? FORWARDING_RECIPIENT_LIMIT;
+      mailbox.aliasLimit = aliasLimit;
+      mailbox.forwardingRecipientLimit = forwardingRecipientLimit;
+      await audit(db, "admin", "mailbox_routing_limits_updated", {
+        mailbox: canonicalMailboxEmail(mailbox) || mailbox.email,
+        previousAliasLimit,
+        aliasLimit,
+        previousForwardingRecipientLimit,
+        forwardingRecipientLimit
       });
       await writeDb(db);
       return json(res, 200, { mailbox: publicMailbox(mailbox) });

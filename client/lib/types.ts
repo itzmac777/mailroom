@@ -56,6 +56,7 @@ export type PublicMailbox = {
   quotaMb: number;
   outboundDailyLimit: number;
   aliasLimit?: number;
+  forwardingRecipientLimit?: number;
   aliases?: PublicMailAlias[];
   forwardingEnabled?: boolean;
   forwardTo?: PublicForwardingRecipient[];

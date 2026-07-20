@@ -41,21 +41,22 @@ export function AdminPanel() {
     }
   }
 
-  async function updateAliasLimit(mailbox: PublicMailbox, form: HTMLFormElement) {
+  async function updateRoutingLimits(mailbox: PublicMailbox, form: HTMLFormElement) {
     const body = new FormData(form);
     const aliasLimit = Number(body.get("aliasLimit"));
+    const forwardingRecipientLimit = Number(body.get("forwardingRecipientLimit"));
     setBusy(true);
-    setMessage(`Updating alias limit for ${mailbox.email}...`);
+    setMessage(`Updating routing limits for ${mailbox.email}...`);
     try {
-      await api<{ mailbox: PublicMailbox }>(`/api/admin/mailboxes/${encodeURIComponent(mailbox.email)}/alias-limit`, {
+      await api<{ mailbox: PublicMailbox }>(`/api/admin/mailboxes/${encodeURIComponent(mailbox.email)}/routing-limits`, {
         method: "PATCH",
         headers: { "x-admin-token": token },
-        body: JSON.stringify({ aliasLimit })
+        body: JSON.stringify({ aliasLimit, forwardingRecipientLimit })
       });
       await refresh(token);
-      setMessage(`Alias limit updated for ${mailbox.email}.`);
+      setMessage(`Routing limits updated for ${mailbox.email}.`);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not update alias limit.");
+      setMessage(error instanceof Error ? error.message : "Could not update routing limits.");
     } finally {
       setBusy(false);
     }
@@ -100,7 +101,7 @@ export function AdminPanel() {
             <div className="mt-8">
               <div className="mb-3 flex items-end justify-between gap-4 max-md:grid">
                 <div>
-                  <p className="eyebrow m-0">Alias limits</p>
+                  <p className="eyebrow m-0">Routing limits</p>
                   <h3 className="text-xl font-extrabold">Mailbox capacity</h3>
                 </div>
                 <span className="text-xs font-bold text-muted">{summary.mailboxes.length} mailbox{summary.mailboxes.length === 1 ? "" : "es"}</span>
@@ -108,24 +109,32 @@ export function AdminPanel() {
               <div className="grid border-t border-line">
                 {summary.mailboxes.length ? summary.mailboxes.map((mailbox) => {
                   const activeAliases = (mailbox.aliases || []).filter((alias) => alias.status === "active").length;
+                  const activeForwardingRecipients = (mailbox.forwardTo || []).filter((recipient) => !recipient.disabledAt).length;
                   const aliasLimit = mailbox.aliasLimit ?? 5;
+                  const forwardingRecipientLimit = mailbox.forwardingRecipientLimit ?? 3;
                   return (
                     <form
                       key={mailbox.email}
-                      className="grid grid-cols-[minmax(160px,1fr)_auto_minmax(110px,0.36fr)_auto] items-center gap-3 border-b border-line py-3 text-sm max-lg:grid-cols-1"
+                      className="grid grid-cols-[minmax(160px,1fr)_auto_minmax(110px,0.32fr)_minmax(130px,0.36fr)_auto] items-center gap-3 border-b border-line py-3 text-sm max-xl:grid-cols-1"
                       onSubmit={(event) => {
                         event.preventDefault();
-                        updateAliasLimit(mailbox, event.currentTarget).catch(() => undefined);
+                        updateRoutingLimits(mailbox, event.currentTarget).catch(() => undefined);
                       }}
                     >
                       <div>
                         <strong className="break-all">{mailbox.email}</strong>
                         <p className="mt-1 text-xs text-muted">{mailbox.kind || "permanent"} · {mailbox.status}</p>
                       </div>
-                      <span className="text-xs font-bold text-muted">{activeAliases}/{aliasLimit} active aliases</span>
+                      <span className="text-xs font-bold text-muted">
+                        {activeAliases}/{aliasLimit} aliases · {activeForwardingRecipients}/{forwardingRecipientLimit} forwarding
+                      </span>
                       <label className="label text-xs">
                         Alias limit
                         <input className="field min-h-10" name="aliasLimit" type="number" min="1" max="500" defaultValue={aliasLimit} />
+                      </label>
+                      <label className="label text-xs">
+                        Forwarding limit
+                        <input className="field min-h-10" name="forwardingRecipientLimit" type="number" min="1" max="50" defaultValue={forwardingRecipientLimit} />
                       </label>
                       <button className="button button-secondary min-h-[38px] px-4" type="submit" disabled={busy || !token}>
                         Save

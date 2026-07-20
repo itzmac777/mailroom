@@ -85,25 +85,29 @@ test("rotator device, account, session, audit, and revocation flow", async () =>
       webmailUrl: "https://mail.example.com/webmail/",
       aliases: [],
       aliasLimit: 5,
+      forwardingRecipientLimit: 3,
       forwardingEnabled: false,
       forwardTo: [],
       providerResult: { provider: "dry-run" }
     };
     await writeFile(dbPath, JSON.stringify(seededDb, null, 2));
 
-    const updatedAliasLimit = await request(baseUrl, "/api/admin/mailboxes/owner%40example.com/alias-limit", {
+    const updatedRoutingLimits = await request(baseUrl, "/api/admin/mailboxes/owner%40example.com/routing-limits", {
       method: "PATCH",
       headers: { "x-admin-token": adminToken },
-      body: JSON.stringify({ aliasLimit: 12 })
+      body: JSON.stringify({ aliasLimit: 12, forwardingRecipientLimit: 7 })
     });
-    assert.equal(updatedAliasLimit.response.status, 200);
-    assert.equal(updatedAliasLimit.payload.mailbox.aliasLimit, 12);
+    assert.equal(updatedRoutingLimits.response.status, 200);
+    assert.equal(updatedRoutingLimits.payload.mailbox.aliasLimit, 12);
+    assert.equal(updatedRoutingLimits.payload.mailbox.forwardingRecipientLimit, 7);
 
     const adminSummary = await request(baseUrl, "/api/admin/summary", {
       headers: { "x-admin-token": adminToken }
     });
     assert.equal(adminSummary.response.status, 200);
-    assert.equal(adminSummary.payload.mailboxes.find((mailbox: any) => mailbox.email === "owner@example.com").aliasLimit, 12);
+    const summaryMailbox = adminSummary.payload.mailboxes.find((mailbox: any) => mailbox.email === "owner@example.com");
+    assert.equal(summaryMailbox.aliasLimit, 12);
+    assert.equal(summaryMailbox.forwardingRecipientLimit, 7);
 
     const missingAlias = await request(baseUrl, "/api/rotator/aliases/lookup?hostname=www.amazon.co.uk", {
       headers: deviceHeaders
